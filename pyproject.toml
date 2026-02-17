@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "teleopit"
+version = "0.1.0"
+description = "Teleoperation framework for humanoid robots with motion retargeting"
+authors = [
+    {name = "Teleopit Team"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "mujoco",
+    "mink",
+    "qpsolvers[proxqp]",
+    "torch",
+    "scipy",
+    "numpy",
+    "hydra-core",
+    "omegaconf",
+    "h5py",
+    "onnxruntime",
+    "rich",
+    "loop-rate-limiters",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["teleopit*"]

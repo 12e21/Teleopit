@@ -1,0 +1,9 @@
+defaults:
+  - robot: g1
+  - controller: rl_policy
+  - input: bvh
+  - _self_
+
+hydra:
+  run:
+    dir: .
