@@ -60,6 +60,8 @@ venv.bak/
 .sisyphus/evidence/
 *.h5
 *.onnx
+data/
+outputs/
 
 # OS
 .DS_Store
