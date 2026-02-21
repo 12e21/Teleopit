@@ -31,6 +31,11 @@ sim_dt: 0.001
 xml_path: "GMR/assets/unitree_g1/g1_mocap_29dof.xml"
 base_body: "pelvis"
 
+ang_vel_scale: 0.25
+dof_pos_scale: 1.0
+dof_vel_scale: 0.05
+ankle_idx: [4, 5, 10, 11]
+
 mujoco_default_qpos: [0, 0, 0.793,
                       1, 0, 0, 0,
                       -0.2, 0.0, 0.0, 0.4, -0.2, 0.0,

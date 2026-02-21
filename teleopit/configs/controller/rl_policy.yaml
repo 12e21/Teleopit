@@ -1,2 +1,5 @@
 policy_path: null
 device: "cpu"
+
+action_scale: 0.5
+clip_range: [-10.0, 10.0]

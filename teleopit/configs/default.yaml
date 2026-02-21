@@ -4,6 +4,9 @@ defaults:
   - input: bvh
   - _self_
 
+policy_hz: 50.0
+pd_hz: 1000.0
+
 hydra:
   run:
     dir: .
