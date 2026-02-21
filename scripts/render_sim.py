@@ -62,9 +62,10 @@ def _write_video(frames: list[np.ndarray], path: Path, fps: int) -> None:
     print(f"  Saved: {path} ({size_mb:.1f} MB, {len(frames)} frames, {duration:.1f}s @ {fps}fps)")
 
 
-def _load_configs(bvh_path: str, project_root: Path, policy_hz: int) -> dict[str, Any]:
+def _load_configs(bvh_path: str, project_root: Path) -> dict[str, Any]:
     from omegaconf import OmegaConf
 
+    default_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "default.yaml")
     robot_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "robot" / "g1.yaml")
     controller_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "controller" / "rl_policy.yaml")
     input_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "input" / "bvh.yaml")
@@ -78,8 +79,6 @@ def _load_configs(bvh_path: str, project_root: Path, policy_hz: int) -> dict[str
         sys.exit(1)
     controller_cfg.policy_path = str(policy_path)
     controller_cfg.default_dof_pos = list(robot_cfg.default_angles)
-    controller_cfg.action_scale = 0.5
-    controller_cfg.clip_range = [-10.0, 10.0]
 
     input_cfg.bvh_file = str(bvh_path)
     input_cfg.provider = "bvh"
@@ -91,7 +90,8 @@ def _load_configs(bvh_path: str, project_root: Path, policy_hz: int) -> dict[str
         "robot": robot_cfg,
         "controller": controller_cfg,
         "input": input_cfg,
-        "policy_hz": policy_hz,
+        "policy_hz": float(OmegaConf.select(default_cfg, "policy_hz", default=50.0)),
+        "pd_hz": float(OmegaConf.select(default_cfg, "pd_hz", default=1000.0)),
     }
 
 
@@ -186,7 +186,7 @@ def render_retarget(
 ) -> None:
     """Render GMR retargeting result — set qpos directly, no physics."""
     project_root = _find_project_root()
-    cfgs = _load_configs(str(bvh_path), project_root, policy_hz=fps)
+    cfgs = _load_configs(str(bvh_path), project_root)
 
     from teleopit.inputs import BVHInputProvider
     from teleopit.retargeting.core import RetargetingModule
@@ -256,11 +256,11 @@ def render_sim2sim(
     max_frames: int = 0,
 ) -> None:
     """Render full sim2sim: BVH → GMR → obs → ONNX policy → PD control → MuJoCo."""
-    POLICY_HZ = 50
-    PD_HZ = 1000
-
     project_root = _find_project_root()
-    cfgs = _load_configs(str(bvh_path), project_root, policy_hz=POLICY_HZ)
+    cfgs = _load_configs(str(bvh_path), project_root)
+
+    POLICY_HZ = int(cfgs["policy_hz"])
+    PD_HZ = int(cfgs["pd_hz"])
 
     from omegaconf import OmegaConf
 
