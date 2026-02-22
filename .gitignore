@@ -57,11 +57,15 @@ venv.bak/
 *~
 
 # Project-specific
-.sisyphus/evidence/
+.sisyphus/
 *.h5
 *.onnx
 data/
 outputs/
+logs/
+# Training - downloaded reference assets (re-downloadable)
+teleopit_train/assets/g1/usd/configuration/
+teleopit_train/assets/g1/usd/meshes/
 
 # OS
 .DS_Store
