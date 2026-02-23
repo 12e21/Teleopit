@@ -52,7 +52,7 @@ import warnings
 # from teleopit_train.rsl_rl.utils.running_mean_std import RunningMeanStd
 from teleopit_train.rsl_rl.utils.normalizer import Normalizer
 
-from teleopit_train.legged_gym import TELEOPIT_TRAIN_ROOT_DIR
+from teleopit_train import TELEOPIT_TRAIN_ROOT_DIR
 
 
 def get_policy_path(proj_name, exptid, checkpoint=-1):

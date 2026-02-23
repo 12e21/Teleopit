@@ -30,6 +30,7 @@ class G1MimicEnv(DirectRLEnv):
     def __init__(self, cfg: G1MimicEnvCfg, render_mode: str | None = None, **kwargs: Any):
         super().__init__(cfg=cfg, render_mode=render_mode, **kwargs)
         self._init_buffers()
+        self._prepare_evaluation_functions()
         self._contact_indices_ready = False
         if self.robot.num_joints != 29:
             raise ValueError(f"Expected 29 joints, got {self.robot.num_joints}")
@@ -467,6 +468,13 @@ class G1MimicEnv(DirectRLEnv):
             lo, hi = self.cfg.rewards.regularization_scale_range
             self.cfg.rewards.regularization_scale = max(min(self.cfg.rewards.regularization_scale, hi), lo)
 
+        for i in range(len(self.eval_functions)):
+            name = self.eval_names[i]
+            error = self.eval_functions[i]()
+            if isinstance(error, tuple):
+                error = error[0]
+            self.episode_means[name] += (-self.episode_means[name] + error) / (self.episode_length_buf + 1.0)
+
         return self.rew_buf
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -558,6 +566,26 @@ class G1MimicEnv(DirectRLEnv):
         self.feet_air_time[env_ids] = 0.0
         for key in self.episode_sums:
             self.episode_sums[key][env_ids] = 0.0
+        # Populate self.extras["episode"] for wandb logging
+        if len(env_ids) > 0:
+            self.extras["episode"] = {}
+            
+            # Collect reward episode sums (averaged by episode length)
+            for key in self.episode_sums.keys():
+                # Compute mean reward per step for each env being reset
+                episode_lengths = torch.clamp(self.episode_length_buf[env_ids], min=1.0)
+                mean_values = self.episode_sums[key][env_ids] / episode_lengths
+                
+                # Store in extras (runner expects dict of tensors)
+                self.extras["episode"][key] = mean_values
+            
+            # Collect error episode means (prefix with "error_")
+            for name in self.episode_means.keys():
+                self.extras["episode"][f"error_{name}"] = self.episode_means[name][env_ids].clone()
+            
+            # Reset episode_means for the reset envs
+            for name in self.episode_means.keys():
+                self.episode_means[name][env_ids] = 0.0
         self.episode_length[env_ids] = self.episode_length_buf[env_ids].float()
 
         self.scene.write_data_to_sim()
@@ -770,6 +798,88 @@ class G1MimicEnv(DirectRLEnv):
             name: torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
             for name in self.reward_scales.keys()
         }
+
+    def _prepare_evaluation_functions(self):
+        eval_cfg = self.cfg.evaluations
+        self.evaluations = {}
+        for attr_name in vars(eval_cfg):
+            if attr_name.startswith("_"):
+                continue
+            value = getattr(eval_cfg, attr_name)
+            if isinstance(value, bool):
+                self.evaluations[attr_name] = value
+
+        self.eval_functions = []
+        self.eval_names = []
+        for name, enabled in self.evaluations.items():
+            if not enabled:
+                continue
+            fn_name = "_error_" + name
+            if not hasattr(self, fn_name):
+                continue
+            self.eval_names.append(name)
+            self.eval_functions.append(getattr(self, fn_name))
+
+        self.episode_means = {
+            name: torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
+            for name in self.eval_names
+        }
+
+    def _error_tracking_joint_dof(self):
+        dof_diff = self._ref_dof_pos - self.dof_pos
+        return torch.mean(torch.abs(dof_diff), dim=-1)
+
+    def _error_tracking_joint_vel(self):
+        vel_diff = self._ref_dof_vel - self.dof_vel
+        return torch.mean(torch.abs(vel_diff), dim=-1)
+
+    def _error_tracking_root_translation(self):
+        root_pos_diff = self._ref_root_pos - self.root_states[:, 0:3]
+        return torch.mean(torch.abs(root_pos_diff), dim=-1)
+
+    def _error_tracking_root_rotation(self):
+        root_rot_err = pose_torch_utils.quat_diff_angle(self.root_states[:, 3:7], self._ref_root_rot)
+        if root_rot_err.ndim == 1:
+            return torch.abs(root_rot_err)
+        return torch.mean(torch.abs(root_rot_err), dim=-1)
+
+    def _error_tracking_root_vel(self):
+        local_ref_root_vel = quat_rotate_inverse(self._ref_root_rot, self._ref_root_vel)
+        root_vel_diff = local_ref_root_vel - self.base_lin_vel
+        return torch.mean(torch.abs(root_vel_diff), dim=-1)
+
+    def _error_tracking_root_ang_vel(self):
+        local_ref_root_ang_vel = quat_rotate_inverse(self._ref_root_rot, self._ref_root_ang_vel)
+        root_ang_vel_diff = local_ref_root_ang_vel - self.base_ang_vel
+        return torch.mean(torch.abs(root_ang_vel_diff), dim=-1)
+
+    def _error_tracking_keybody_pos(self):
+        key_body_pos = self.rigid_body_states[:, self._key_body_ids, 0:3]
+        key_body_pos = key_body_pos - self.root_states[:, 0:3].unsqueeze(1)
+        if not self.cfg.global_obs:
+            base_yaw_quat = quat_from_euler_xyz(0 * self.yaw, 0 * self.yaw, self.yaw)
+            key_body_pos = _convert_to_local_root_body_pos(base_yaw_quat, key_body_pos)
+
+        tar_key_body_pos = self._ref_body_pos[:, self._key_body_ids, :]
+        tar_key_body_pos = tar_key_body_pos - self._ref_root_pos.unsqueeze(1)
+        if not self.cfg.global_obs:
+            _, _, ref_yaw = euler_from_quaternion(self._ref_root_rot).unbind(dim=-1)
+            ref_yaw_quat = quat_from_euler_xyz(0 * ref_yaw, 0 * ref_yaw, ref_yaw)
+            tar_key_body_pos = _convert_to_local_root_body_pos(ref_yaw_quat, tar_key_body_pos)
+
+        per_body_tensor = torch.mean(torch.abs(key_body_pos - tar_key_body_pos), dim=-1)
+        scalar = torch.mean(per_body_tensor, dim=-1)
+        return scalar, per_body_tensor
+
+    def _error_tracking_feet_slip(self):
+        return self._error_feet_slip()
+
+    def _error_feet_slip(self):
+        contact = self.contact_forces[:, self.feet_indices, 2] > 5.0
+        foot_speed_norm = torch.norm(self.rigid_body_states[:, self.feet_indices, 7:9], dim=2)
+        err = torch.sqrt(foot_speed_norm)
+        err *= contact
+        return torch.sum(err, dim=1)
 
     # ── Tracking reward functions (from HumanoidMimic) ──────────────────
 
