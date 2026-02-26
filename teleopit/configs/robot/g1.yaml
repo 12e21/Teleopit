@@ -28,7 +28,7 @@ torque_limits: [100, 100, 100, 150, 40, 40,
 
 sim_dt: 0.001
 
-xml_path: "GMR/assets/unitree_g1/g1_mocap_29dof.xml"
+xml_path: "GMR/assets/unitree_g1/g1_sim2sim_29dof.xml"
 base_body: "pelvis"
 
 ang_vel_scale: 0.25
