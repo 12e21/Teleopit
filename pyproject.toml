@@ -25,6 +25,8 @@ dependencies = [
     "onnxruntime",
     "rich",
     "loop-rate-limiters",
+    "imageio",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]
@@ -38,8 +40,9 @@ train = [
     "wandb>=0.15.0",
     "tqdm>=4.65.0",
     "pybullet>=3.2.5",
+    "termcolor",
     # Isaac Lab dependencies (installed separately via conda/pip)
-    # See AGENTS.md for Isaac Lab installation instructions
+    # See docs/training.md for Isaac Lab installation instructions
 ]
 
 [tool.setuptools.packages.find]
