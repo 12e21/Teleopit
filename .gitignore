@@ -44,6 +44,7 @@ coverage.xml
 .env
 .venv
 env/
+!teleopit_train/rsl_rl/env/
 venv/
 ENV/
 env.bak/
@@ -70,3 +71,7 @@ teleopit_train/assets/g1/usd/meshes/
 # OS
 .DS_Store
 Thumbs.db
+
+# Hydra runtime output
+.hydra/
+
