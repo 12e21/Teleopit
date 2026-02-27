@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import os
+import sys
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from typing import Any
@@ -15,7 +16,7 @@ from typing import Any
 os.environ.setdefault("OMNI_KIT_ACCEPT_EULA", "YES")
 from isaacsim import SimulationApp
 
-simulation_app = SimulationApp({"headless": True})
+simulation_app = SimulationApp({"headless": "--headless" in sys.argv})
 
 import gymnasium as gym  # noqa: E402
 import torch  # noqa: E402
