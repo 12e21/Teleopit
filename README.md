@@ -33,7 +33,7 @@ Teleopit 采用模块化架构，核心数据流如下所示：
 
 ## 特性
 
-- **GMR 运动重定向**: 独立集成的 GMR 模块，包含完整资产，支持 unitree_g1, h1 等多种机器人。
+- **GMR 运动重定向**: 独立集成的 GMR 模块，包含完整资产，支持 unitree_g1, h1 等多种机器人。支持 lafan1 和 hc_mocap 等多种 BVH 格式。
 - **TWIST2 兼容观测**: 精确复刻 1402D (127×11 + 35) 观测构建逻辑，直接支持 TWIST2 预训练模型。
 - **ONNX RL 策略推理**: 采用 `onnxruntime` 进行推理，不依赖完整的 PyTorch 环境即可运行。
 - **MuJoCo 仿真与 PD 控制**: 集成 MuJoCo 物理引擎，支持 1000Hz PD 控制与 50Hz Policy 推理频率。
