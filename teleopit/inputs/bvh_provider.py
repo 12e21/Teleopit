@@ -12,32 +12,78 @@ def _load_bvh_file(bvh_file: str, format: str = "lafan1"):
     rotation_matrix = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]])
     rotation_quat = R.from_matrix(rotation_matrix).as_quat(scalar_first=True)
 
+    # hc_mocap uses meters, lafan1/nokov use centimeters
+    scale_divisor = 1.0 if format == "hc_mocap" else 100.0
+
     frames = []
     for frame in range(data.pos.shape[0]):
         result = {}
         for i, bone in enumerate(data.bones):
             orientation = utils.quat_mul(rotation_quat, global_data[0][frame, i])
-            position = global_data[1][frame, i] @ rotation_matrix.T / 100
+            position = global_data[1][frame, i] @ rotation_matrix.T / scale_divisor
             result[bone] = [position, orientation]
 
-        left_foot_key = "LeftFoot" if "LeftFoot" in result else "LeftAnkle"
-        right_foot_key = "RightFoot" if "RightFoot" in result else "RightAnkle"
-        left_toe_key = "LeftToe" if "LeftToe" in result else "LeftToeBase"
-        right_toe_key = "RightToe" if "RightToe" in result else "RightToeBase"
-            
         if format == "lafan1":
+            left_foot_key = "LeftFoot" if "LeftFoot" in result else "LeftAnkle"
+            right_foot_key = "RightFoot" if "RightFoot" in result else "RightAnkle"
+            left_toe_key = "LeftToe" if "LeftToe" in result else "LeftToeBase"
+            right_toe_key = "RightToe" if "RightToe" in result else "RightToeBase"
             result["LeftFootMod"] = [result[left_foot_key][0], result[left_toe_key][1]]
             result["RightFootMod"] = [result[right_foot_key][0], result[right_toe_key][1]]
         elif format == "nokov":
+            left_foot_key = "LeftFoot" if "LeftFoot" in result else "LeftAnkle"
+            right_foot_key = "RightFoot" if "RightFoot" in result else "RightAnkle"
+            left_toe_key = "LeftToe" if "LeftToe" in result else "LeftToeBase"
+            right_toe_key = "RightToe" if "RightToe" in result else "RightToeBase"
             result["LeftFootMod"] = [result[left_foot_key][0], result[left_toe_key][1]]
             result["RightFootMod"] = [result[right_foot_key][0], result[right_toe_key][1]]
+        elif format == "hc_mocap":
+            # hc_mocap has no Toe joints — use hc_Foot_L/R position + orientation
+            result["LeftFootMod"] = [result["hc_Foot_L"][0], result["hc_Foot_L"][1]]
+            result["RightFootMod"] = [result["hc_Foot_R"][0], result["hc_Foot_R"][1]]
         else:
             raise ValueError(f"Invalid format: {format}")
-            
+
         frames.append(result)
-    
-    human_height = 1.75
-    return frames, human_height, 30
+
+    # Read FPS from BVH Frame Time field
+    if data.frametime is not None and data.frametime > 0:
+        fps = int(round(1.0 / data.frametime))
+    else:
+        fps = 30
+
+    # Estimate human height from skeleton offsets (sum Y offsets from root to head)
+    bone_names = list(data.bones)
+    offsets = data.offsets  # shape: (num_joints, 3)
+    parents = data.parents
+    # Build path: root → Spine → hc_Chest → hc_Chest1 → neck → hc_Head (or similar)
+    # Sum absolute Y offsets along the longest vertical chain
+    if format == "hc_mocap":
+        # Upward chain: root → Spine → hc_Chest → hc_Chest1 → neck → hc_Head → end_site
+        up_joints = ["Spine", "hc_Chest", "hc_Chest1", "neck", "hc_Head"]
+        up_height = 0.0
+        for jname in up_joints:
+            if jname in bone_names:
+                idx = bone_names.index(jname)
+                up_height += abs(offsets[idx][1])  # Y offset in BVH (Y-up)
+        # Downward chain: root → hc_Hip_L → hc_Knee_L → hc_Foot_L
+        down_joints = ["hc_Hip_L", "hc_Knee_L", "hc_Foot_L"]
+        down_height = 0.0
+        for jname in down_joints:
+            if jname in bone_names:
+                idx = bone_names.index(jname)
+                down_height += abs(offsets[idx][1])  # Y offset in BVH (Y-up)
+        human_height = up_height + down_height
+        if human_height < 0.5:  # fallback
+            human_height = 1.75
+    else:
+        human_height = 1.75
+
+    # Downsample hc_mocap from 60fps to 30fps
+    if format == "hc_mocap" and fps == 60:
+        frames = frames[::2]
+
+    return frames, human_height, fps
 
 
 class BVHInputProvider:
