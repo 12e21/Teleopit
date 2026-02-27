@@ -62,7 +62,7 @@ def _write_video(frames: list[np.ndarray], path: Path, fps: int) -> None:
     print(f"  Saved: {path} ({size_mb:.1f} MB, {len(frames)} frames, {duration:.1f}s @ {fps}fps)")
 
 
-def _load_configs(bvh_path: str, project_root: Path) -> dict[str, Any]:
+def _load_configs(bvh_path: str, project_root: Path, bvh_format: str = "lafan1") -> dict[str, Any]:
     from omegaconf import OmegaConf
 
     default_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "default.yaml")
@@ -82,8 +82,8 @@ def _load_configs(bvh_path: str, project_root: Path) -> dict[str, Any]:
 
     input_cfg.bvh_file = str(bvh_path)
     input_cfg.provider = "bvh"
-    input_cfg.bvh_format = "lafan1"
-    input_cfg.human_format = "bvh_lafan1"
+    input_cfg.bvh_format = bvh_format
+    input_cfg.human_format = f"bvh_{bvh_format}"
     input_cfg.robot_name = "unitree_g1"
 
     return {
@@ -183,20 +183,21 @@ def render_retarget(
     height: int,
     fps: int,
     max_frames: int = 0,
+    bvh_format: str = "lafan1",
 ) -> None:
     """Render GMR retargeting result — set qpos directly, no physics."""
     project_root = _find_project_root()
-    cfgs = _load_configs(str(bvh_path), project_root)
+    cfgs = _load_configs(str(bvh_path), project_root, bvh_format)
 
     from teleopit.inputs import BVHInputProvider
     from teleopit.retargeting.core import RetargetingModule
     from teleopit.robots.mujoco_robot import MuJoCoRobot
 
     robot = MuJoCoRobot(cfgs["robot"])
-    input_prov = BVHInputProvider(bvh_path=str(bvh_path), human_format="lafan1")
+    input_prov = BVHInputProvider(bvh_path=str(bvh_path), human_format=bvh_format)
     retargeter = RetargetingModule(
         robot_name="unitree_g1",
-        human_format="bvh_lafan1",
+        human_format=f"bvh_{bvh_format}",
         actual_human_height=input_prov.human_height,
     )
 
@@ -254,10 +255,11 @@ def render_sim2sim(
     height: int,
     fps: int,
     max_frames: int = 0,
+    bvh_format: str = "lafan1",
 ) -> None:
     """Render full sim2sim: BVH → GMR → obs → ONNX policy → PD control → MuJoCo."""
     project_root = _find_project_root()
-    cfgs = _load_configs(str(bvh_path), project_root)
+    cfgs = _load_configs(str(bvh_path), project_root, bvh_format)
 
     POLICY_HZ = int(cfgs["policy_hz"])
     PD_HZ = int(cfgs["pd_hz"])
@@ -369,6 +371,7 @@ def main() -> None:
     parser.add_argument("--max_seconds", type=float, default=0, help="Max video duration in seconds (0=full BVH)")
     parser.add_argument("--width", type=int, default=640, help="Video width")
     parser.add_argument("--height", type=int, default=360, help="Video height")
+    parser.add_argument("--format", type=str, default="lafan1", help="BVH format (lafan1 or hc_mocap)")
     args = parser.parse_args()
 
     project_root = _find_project_root()
@@ -409,6 +412,7 @@ def main() -> None:
         height=args.height,
         fps=fps,
         max_frames=max_frames,
+        bvh_format=args.format,
     )
 
     sim2sim_out = output_dir / f"{stem}_sim2sim.mp4"
@@ -420,6 +424,7 @@ def main() -> None:
         height=args.height,
         fps=fps,
         max_frames=max_frames,
+        bvh_format=args.format,
     )
 
     print(f"\nDone! Videos saved to {output_dir}/")
