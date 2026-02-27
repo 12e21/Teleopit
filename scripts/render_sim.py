@@ -260,6 +260,14 @@ def render_retarget(
         data.qvel[:] = 0
         mujoco.mj_forward(model, data)
 
+        # Post-process: lift root Z so feet don't sink below ground
+        left_foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_ankle_roll_link")
+        right_foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right_ankle_roll_link")
+        lowest_foot_z = min(data.xpos[left_foot_id][2], data.xpos[right_foot_id][2])
+        if lowest_foot_z < 0.0:
+            data.qpos[2] -= lowest_foot_z  # lift root by the penetration depth
+            mujoco.mj_forward(model, data)
+
         cam.lookat[:] = [data.qpos[0], data.qpos[1], 0.8]
 
         renderer.update_scene(data, camera=cam)
