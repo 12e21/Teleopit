@@ -25,6 +25,8 @@ dependencies = [
     "onnxruntime",
     "rich",
     "loop-rate-limiters",
+    "imageio",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]
@@ -32,7 +34,17 @@ dev = [
     "pytest",
     "pytest-cov",
 ]
+train = [
+    "torch>=2.0.0",
+    "numpy>=1.20.0",
+    "wandb>=0.15.0",
+    "tqdm>=4.65.0",
+    "pybullet>=3.2.5",
+    "termcolor",
+    # Isaac Lab dependencies (installed separately via conda/pip)
+    # See docs/training.md for Isaac Lab installation instructions
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["teleopit*"]
+include = ["teleopit*", "teleopit_train*"]

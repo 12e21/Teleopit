@@ -1,0 +1,12 @@
+retarget_*_npy
+cmu_fbx_all
+retarget_npy
+data.tar.gz
+cmu_fbx
+data/smpl_models/
+data/smpl_motions/
+data/smpl_bvh/
+data/amass_motions/
+data/amass_npy/
+data/amass2grmini_npy/
+generate_source_pkl.py

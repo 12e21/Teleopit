@@ -1,8 +1,0 @@
-- +num_steps=100
-- +record=true
-- +pd_hz=50
-- +policy_hz=50
-- +input.human_format=bvh_xsens
-- +input.bvh_format=lafan1
-- +controller.action_scale=0
-- +recording.output_path=/inspire/qb-dev/project/robot-action/czxs253130598/home_qbdev/project/teleop_projects/.sisyphus/evidence/task-13-run-sim.h5

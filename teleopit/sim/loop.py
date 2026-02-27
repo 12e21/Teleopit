@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import time
 from typing import Protocol, cast, final
-
+import mujoco
+import mujoco.viewer
 import numpy as np
 from numpy.typing import NDArray
 
@@ -51,6 +53,7 @@ class SimulationLoop:
         obs_builder: ObservationBuilder,
         bus: MessageBus,
         cfg: object,
+        viewer: bool = False,
     ) -> None:
         self.robot: Robot = robot
         self.controller: Controller = controller
@@ -79,6 +82,28 @@ class SimulationLoop:
         self._last_action: Float32Array = np.zeros((self._num_actions,), dtype=np.float32)
         self._last_retarget_qpos: Float64Array | None = None
 
+        # Viewer
+        self._viewer_handle: object | None = None
+        self._pelvis_body_id: int | None = None
+        if viewer:
+            model = getattr(self.robot, "model", None)
+            data = getattr(self.robot, "data", None)
+            if model is not None and data is not None:
+                v = mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False)
+                v.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = 0
+                v.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 0
+                v.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 0
+                v.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = 0
+                v.cam.distance = 2.0
+                self._viewer_handle = v
+                try:
+                    self._pelvis_body_id = model.body("pelvis").id
+                except Exception:
+                    self._pelvis_body_id = None
+            else:
+                import warnings
+                warnings.warn("viewer=True but robot has no model/data attributes; skipping viewer")
+
     def run(
         self,
         input_provider: InputProvider,
@@ -87,7 +112,13 @@ class SimulationLoop:
         recorder: Recorder | None = None,
     ) -> dict[str, float | int]:
         steps_done = 0
+        viewer = self._viewer_handle
+        policy_dt = 1.0 / self.policy_hz
+        wall_start = time.monotonic() if viewer is not None else 0.0
         for _ in range(num_steps):
+            if viewer is not None and not viewer.is_running():
+                break
+
             human_frame = input_provider.get_frame()
             retargeted = retargeter.retarget(human_frame)
             qpos = self._retarget_to_qpos(retargeted)
@@ -116,11 +147,27 @@ class SimulationLoop:
             self._publish(mimic_obs, action, final_state)
             self._record(recorder, final_state, mimic_obs, action, target_dof_pos, torque)
 
+            if viewer is not None:
+                # Camera tracks pelvis
+                if self._pelvis_body_id is not None:
+                    data = getattr(self.robot, "data", None)
+                    if data is not None:
+                        viewer.cam.lookat[:] = data.xpos[self._pelvis_body_id]
+                viewer.sync()
+                # Real-time pacing: sleep until wall clock catches up with sim time
+                sim_time = (steps_done + 1) * policy_dt
+                wall_elapsed = time.monotonic() - wall_start
+                sleep_time = sim_time - wall_elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+
             self._last_action = action
             self._last_retarget_qpos = qpos.copy()
             steps_done += 1
 
         final_state = self.robot.get_state()
+        if self._viewer_handle is not None and self._viewer_handle.is_running():
+            self._viewer_handle.close()
         return {
             "steps": steps_done,
             "root_height": self._get_root_height(final_state),

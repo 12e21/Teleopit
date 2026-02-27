@@ -44,6 +44,7 @@ coverage.xml
 .env
 .venv
 env/
+!teleopit_train/rsl_rl/env/
 venv/
 ENV/
 env.bak/
@@ -57,12 +58,20 @@ venv.bak/
 *~
 
 # Project-specific
-.sisyphus/evidence/
+.sisyphus/
 *.h5
 *.onnx
 data/
 outputs/
+logs/
+# Training - downloaded reference assets (re-downloadable)
+teleopit_train/assets/g1/usd/configuration/
+teleopit_train/assets/g1/usd/meshes/
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Hydra runtime output
+.hydra/
+

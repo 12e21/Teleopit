@@ -148,3 +148,32 @@ pytest tests/ -v
 - `numpy`, `scipy`, `torch`: 数值计算与张量处理
 - `rich`: 终端日志增强
 
+
+## 训练
+
+Teleopit 集成了 TWIST2 的训练代码，作为独立的 `teleopit_train` 包，基于 Isaac Lab 进行 GPU 并行仿真训练。
+
+快速开始：
+
+```bash
+# 1. 环境搭建（详见 docs/training.md）
+conda activate teleopit_isaaclab
+# 2. 训练 teacher 策略
+python teleopit_train/scripts/train.py \
+    --task Isaac-G1-Mimic-v0 \
+    --num_envs 4096 \
+    --max_iterations 30000 \
+    --headless
+
+# 3. 导出 ONNX 模型
+python teleopit_train/scripts/save_onnx.py \
+    --checkpoint logs/rsl_rl/g1_mimic/<timestamp>/model_30000.pt \
+    --output policy.onnx
+# 4. 推理
+python scripts/run_sim.py --policy policy.onnx
+```
+
+详细文档：
+- [训练指南](docs/training.md) — 环境搭建、训练流程、指标解读
+- [资产管理](docs/assets.md) — USD/URDF 转换与验证
+- [常见问题](docs/troubleshooting.md) — PhysX 挂起、Isaac Sim 警告等
