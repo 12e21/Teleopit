@@ -140,6 +140,12 @@ def render_bvh(
     global_quats, global_pos = utils.quat_fk(data.quats, data.pos, data.parents)
     scale_divisor = 1.0 if bvh_format == "hc_mocap" else 100.0
     positions = np.einsum("fbi,ji->fbj", global_pos, rotation_matrix) / scale_divisor
+    # hc_mocap 60fps is downsampled to 30fps by BVHInputProvider — match here
+    if bvh_format == "hc_mocap" and positions.shape[0] > 0:
+        raw_fps = round(1.0 / data.frametime) if data.frametime else 30
+        if raw_fps == 60:
+            positions = positions[::2]
+            global_quats = global_quats[::2]
     parents = data.parents
 
     num_frames = positions.shape[0]
@@ -432,6 +438,9 @@ def main() -> None:
         sys.exit(1)
 
     fps = _read_bvh_fps(bvh_path)
+    # hc_mocap 60fps is downsampled to 30fps by BVHInputProvider — match here
+    if args.format == "hc_mocap" and fps == 60:
+        fps = 30
     max_frames = int(fps * args.max_seconds) if args.max_seconds > 0 else 0
 
     output_dir = project_root / "outputs"
