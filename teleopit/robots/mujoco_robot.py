@@ -26,7 +26,8 @@ class MuJoCoRobot:
         if not xml_path.exists():
             raise FileNotFoundError(f"MuJoCo XML not found: {xml_path}")
 
-        self.model = mujoco.MjModel.from_xml_path(str(xml_path))
+        self.xml_path: str = str(xml_path)
+        self.model = mujoco.MjModel.from_xml_path(self.xml_path)
         self.data = mujoco.MjData(self.model)
 
         # Simulation timestep from config (default 0.001)

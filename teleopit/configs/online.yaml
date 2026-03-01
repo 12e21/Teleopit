@@ -1,13 +1,14 @@
 defaults:
   - robot: g1
   - controller: rl_policy
-  - input: bvh
+  - input: udp_bvh
   - _self_
 
 policy_hz: 50.0
 pd_hz: 1000.0
 viewers: "sim2sim"
-realtime: false
+realtime: true
+num_steps: 0          # 0 = infinite loop until Ctrl+C or UDP disconnect
 
 hydra:
   run:

@@ -1,12 +1,119 @@
+from __future__ import annotations
+
+import re
 from typing import Dict, Any, Tuple
+
 import numpy as np
 from teleopit.retargeting.gmr.utils.lafan_vendor.extract import read_bvh
 from teleopit.retargeting.gmr.utils.lafan_vendor import utils
 from scipy.spatial.transform import Rotation as R
 
 
+# Channel name → single-letter axis (same mapping as extract.py)
+_CHANNELMAP = {
+    'Xrotation': 'x',
+    'Yrotation': 'y',
+    'Zrotation': 'z',
+}
+
+
+def _parse_bvh_header(bvh_path: str) -> tuple[str, int]:
+    """Parse the BVH header to extract Euler rotation order and channel count.
+
+    Mimics the parsing behaviour of ``extract.read_bvh``: ``channels`` is
+    updated by every ``CHANNELS`` line (so the *last* one wins), while
+    ``euler_order`` is captured only once from the first ``CHANNELS`` line.
+
+    Returns (euler_order, channels) e.g. ("zxy", 3) for hc_mocap.
+    """
+    euler_order: str | None = None
+    channels: int = 3
+
+    with open(bvh_path, "r") as f:
+        for line in f:
+            if "MOTION" in line:
+                break
+            chanmatch = re.match(r"\s*CHANNELS\s+(\d+)", line)
+            if chanmatch:
+                channels = int(chanmatch.group(1))
+                if euler_order is None:
+                    channelis = 0 if channels == 3 else 3
+                    channelie = 3 if channels == 3 else 6
+                    parts = line.split()[2 + channelis:2 + channelie]
+                    if all(p in _CHANNELMAP for p in parts):
+                        euler_order = "".join(_CHANNELMAP[p] for p in parts)
+
+    return euler_order or "zyx", channels
+
+
+def process_single_bvh_frame(
+    data_floats: np.ndarray,
+    offsets: np.ndarray,
+    bone_names: list[str],
+    bone_parents: np.ndarray,
+    euler_order: str,
+    rotation_quat: np.ndarray,
+    rotation_matrix: np.ndarray,
+    format: str,
+    scale_divisor: float,
+    channels: int,
+) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+    """Process a single BVH frame (one line of motion data) into a pose dict.
+
+    The output format matches ``BVHInputProvider.get_frame()``.
+    """
+    N = len(bone_names)
+
+    # Parse positions and euler angles from the flat float array
+    positions = offsets.copy()  # (N, 3)
+    if channels == 3:
+        positions[0] = data_floats[0:3]
+        euler_deg = data_floats[3:].reshape(N, 3)
+    elif channels == 6:
+        data_block = data_floats.reshape(N, 6)
+        positions[:] = data_block[:, 0:3]
+        euler_deg = data_block[:, 3:6]
+    else:
+        raise ValueError(f"Unsupported channel count: {channels}")
+
+    # Euler → local quaternions → FK
+    local_quats = utils.euler_to_quat(np.radians(euler_deg), order=euler_order)
+    global_quats, global_pos = utils.quat_fk(
+        local_quats[np.newaxis], positions[np.newaxis], bone_parents
+    )
+    global_quats = global_quats[0]  # (N, 4)
+    global_pos = global_pos[0]      # (N, 3)
+
+    # Coordinate transform (Y-up → Z-up) + scale + height offset
+    result: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+    for i, bone in enumerate(bone_names):
+        orientation = utils.quat_mul(rotation_quat, global_quats[i])
+        position = global_pos[i] @ rotation_matrix.T / scale_divisor
+        if format == "hc_mocap":
+            position = position + np.array([0.0, 0.0, 0.9526])
+        result[bone] = (position, orientation)
+
+    # Foot synthesis
+    if format == "lafan1" or format == "nokov":
+        left_foot_key = "LeftFoot" if "LeftFoot" in result else "LeftAnkle"
+        right_foot_key = "RightFoot" if "RightFoot" in result else "RightAnkle"
+        left_toe_key = "LeftToe" if "LeftToe" in result else "LeftToeBase"
+        right_toe_key = "RightToe" if "RightToe" in result else "RightToeBase"
+        result["LeftFootMod"] = (result[left_foot_key][0], result[left_toe_key][1])
+        result["RightFootMod"] = (result[right_foot_key][0], result[right_toe_key][1])
+    elif format == "hc_mocap":
+        result["LeftFootMod"] = (result["hc_Foot_L"][0], result["LeftToeBase"][1])
+        result["RightFootMod"] = (result["hc_Foot_R"][0], result["RightToeBase"][1])
+    else:
+        raise ValueError(f"Invalid format: {format}")
+
+    return result
+
+
 def _load_bvh_file(bvh_file: str, format: str = "lafan1"):
     data = read_bvh(bvh_file)
+    bone_names = list(data.bones)
+    bone_parents = np.array(data.parents, dtype=np.int32)
     global_data = utils.quat_fk(data.quats, data.pos, data.parents)
 
     rotation_matrix = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]])
@@ -73,8 +180,9 @@ def _load_bvh_file(bvh_file: str, format: str = "lafan1"):
     # Downsample hc_mocap from 60fps to 30fps
     if format == "hc_mocap" and fps == 60:
         frames = frames[::2]
+        fps = 30
 
-    return frames, human_height, fps
+    return frames, human_height, fps, bone_names, bone_parents
 
 
 class BVHInputProvider:
@@ -82,7 +190,7 @@ class BVHInputProvider:
     def __init__(self, bvh_path: str, human_format: str = "lafan1"):
         self.bvh_path = bvh_path
         self.human_format = human_format
-        self._frames, self._human_height, self._fps = _load_bvh_file(bvh_path, format=human_format)
+        self._frames, self._human_height, self._fps, self._bone_names, self._bone_parents = _load_bvh_file(bvh_path, format=human_format)
         self._current_frame = 0
         
     def get_frame(self) -> Dict[str, Tuple[Any, Any]]:
@@ -113,3 +221,11 @@ class BVHInputProvider:
     @property
     def human_height(self) -> float:
         return self._human_height
+
+    @property
+    def bone_names(self) -> list[str]:
+        return self._bone_names
+
+    @property
+    def bone_parents(self) -> np.ndarray:
+        return self._bone_parents

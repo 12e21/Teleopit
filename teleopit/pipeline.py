@@ -8,7 +8,7 @@ from omegaconf import DictConfig
 from teleopit.bus.in_process import InProcessBus
 from teleopit.controllers.observation import TWIST2ObservationBuilder
 from teleopit.controllers.rl_policy import RLPolicyController
-from teleopit.inputs import BVHInputProvider
+from teleopit.inputs import BVHInputProvider, UDPBVHInputProvider
 from teleopit.recording.hdf5_recorder import HDF5Recorder
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.robots.mujoco_robot import MuJoCoRobot
@@ -31,6 +31,35 @@ def _cfg_set(cfg: Any, key: str, value: Any) -> None:
     setattr(cfg, key, value)
 
 
+def _parse_viewers(cfg: Any) -> set[str]:
+    """Parse viewers config into a set of viewer names.
+
+    Supports the new ``viewers`` key (comma-separated string or the
+    special values ``"all"`` / ``"none"``) as well as the legacy
+    ``viewer: true/false`` boolean.
+    """
+    viewers_raw = _cfg_get(cfg, "viewers", None)
+    if viewers_raw is not None:
+        # Support Hydra list syntax (e.g. [retarget,sim2sim])
+        if hasattr(viewers_raw, "__iter__") and not isinstance(viewers_raw, str):
+            return {str(v).strip().lower() for v in viewers_raw if str(v).strip()}
+        s = str(viewers_raw).strip().lower()
+        if s == "all":
+            return {"bvh", "retarget", "sim2sim"}
+        if s in ("none", "false", ""):
+            return set()
+        # Strip surrounding quotes/brackets from Hydra
+        s = s.strip("'\"[]")
+        return {v.strip() for v in s.split(",") if v.strip()}
+
+    # Backward compat: legacy ``viewer: true/false``
+    legacy = _cfg_get(cfg, "viewer", None)
+    if legacy is not None:
+        return {"sim2sim"} if bool(legacy) else set()
+
+    return set()
+
+
 class _LoopingInputProvider:
     def __init__(self, provider: BVHInputProvider) -> None:
         self._provider = provider
@@ -42,6 +71,18 @@ class _LoopingInputProvider:
 
     def is_available(self) -> bool:
         return True
+
+    @property
+    def fps(self) -> int:
+        return self._provider.fps
+
+    @property
+    def bone_names(self) -> list[str]:
+        return self._provider.bone_names
+
+    @property
+    def bone_parents(self) -> Any:
+        return self._provider.bone_parents
 
 
 class TeleopPipeline:
@@ -59,13 +100,26 @@ class TeleopPipeline:
             raise ValueError("cfg must include robot/controller/input sections")
 
         self.robot = MuJoCoRobot(robot_cfg)
+
+        # Ensure controller has default_dof_pos from robot config
+        if _cfg_get(controller_cfg, "default_dof_pos", None) is None:
+            default_angles = _cfg_get(robot_cfg, "default_angles", None)
+            if default_angles is not None:
+                _cfg_set(controller_cfg, "default_dof_pos", list(default_angles))
+
         self.controller = RLPolicyController(controller_cfg)
         self.obs_builder = TWIST2ObservationBuilder(self._build_obs_cfg(robot_cfg))
         self.bus = InProcessBus()
         self.input_provider = self._build_input_provider(input_cfg)
+
+        human_format = _cfg_get(input_cfg, "human_format", None)
+        if not human_format or str(human_format) == "null":
+            bvh_format = str(_cfg_get(input_cfg, "bvh_format", "lafan1"))
+            human_format = f"bvh_{bvh_format}"
+
         self.retargeter = RetargetingModule(
             robot_name=str(_cfg_get(input_cfg, "robot_name", "unitree_g1")),
-            human_format=str(_cfg_get(input_cfg, "human_format", "bvh_lafan1")),
+            human_format=str(human_format),
             actual_human_height=float(_cfg_get(input_cfg, "human_height", 1.75)),
         )
 
@@ -73,19 +127,19 @@ class TeleopPipeline:
             "policy_hz": float(_cfg_get(cfg, "policy_hz", 50.0)),
             "pd_hz": float(_cfg_get(cfg, "pd_hz", 1000.0)),
         }
-        viewer_enabled = bool(_cfg_get(cfg, "viewer", False))
+        viewer_set = _parse_viewers(cfg)
         self.loop = SimulationLoop(
             cast(Any, self.robot),
             cast(Any, self.controller),
             cast(Any, self.obs_builder),
             cast(Any, self.bus),
             sim_cfg,
-            viewer=viewer_enabled,
+            viewers=viewer_set,
         )
 
     def run(self, num_steps: int, record: bool = False) -> dict[str, float | int | str]:
-        if num_steps <= 0:
-            raise ValueError("num_steps must be positive")
+        if num_steps < 0:
+            raise ValueError("num_steps must be non-negative (0 = infinite)")
 
         if not record:
             return dict(self.loop.run(cast(Any, self.input_provider), cast(Any, self.retargeter), num_steps=num_steps))
@@ -110,6 +164,22 @@ class TeleopPipeline:
 
     def _build_input_provider(self, input_cfg: Any) -> Any:
         provider_kind = str(_cfg_get(input_cfg, "provider", "bvh")).lower()
+
+        if provider_kind == "udp_bvh":
+            ref_bvh = str(_cfg_get(input_cfg, "reference_bvh", ""))
+            if not ref_bvh:
+                raise ValueError("input.reference_bvh must be set for udp_bvh provider")
+            ref_path = Path(ref_bvh)
+            if not ref_path.is_absolute():
+                ref_path = (self._project_root / ref_path).resolve()
+            return UDPBVHInputProvider(
+                reference_bvh=str(ref_path),
+                host=str(_cfg_get(input_cfg, "udp_host", "")),
+                port=int(_cfg_get(input_cfg, "udp_port", 1118)),
+                human_format=str(_cfg_get(input_cfg, "bvh_format", "hc_mocap")),
+                timeout=float(_cfg_get(input_cfg, "udp_timeout", 30.0)),
+            )
+
         bvh_path = str(_cfg_get(input_cfg, "bvh_file", ""))
         if not bvh_path:
             raise ValueError("input.bvh_file must be set")
@@ -151,11 +221,13 @@ class TeleopPipeline:
                 _cfg_set(controller_cfg, "policy_path", str(default_policy.resolve()))
 
         if input_cfg is not None:
-            bvh_file = str(_cfg_get(input_cfg, "bvh_file", ""))
-            if not bvh_file or bvh_file == "None":
-                default_bvh = self._project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "xsens_bvh_test" / "251021_04_boxing_120Hz_cm_3DsMax.bvh"
-                _cfg_set(input_cfg, "bvh_file", str(default_bvh.resolve()))
-                if _cfg_get(input_cfg, "bvh_format", None) is None:
-                    _cfg_set(input_cfg, "bvh_format", "lafan1")
-                if _cfg_get(input_cfg, "human_format", None) is None:
-                    _cfg_set(input_cfg, "human_format", "bvh_xsens")
+            provider_kind = str(_cfg_get(input_cfg, "provider", "bvh")).lower()
+            if provider_kind != "udp_bvh":
+                bvh_file = str(_cfg_get(input_cfg, "bvh_file", ""))
+                if not bvh_file or bvh_file == "None":
+                    default_bvh = self._project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "xsens_bvh_test" / "251021_04_boxing_120Hz_cm_3DsMax.bvh"
+                    _cfg_set(input_cfg, "bvh_file", str(default_bvh.resolve()))
+                    if _cfg_get(input_cfg, "bvh_format", None) is None:
+                        _cfg_set(input_cfg, "bvh_format", "lafan1")
+                    if _cfg_get(input_cfg, "human_format", None) is None:
+                        _cfg_set(input_cfg, "human_format", "bvh_xsens")

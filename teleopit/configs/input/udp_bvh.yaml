@@ -1,0 +1,9 @@
+provider: udp_bvh
+reference_bvh: "data/hc_mocap/wander.bvh"
+bvh_format: hc_mocap
+human_format: bvh_hc_mocap
+robot_name: unitree_g1
+human_height: 1.75
+udp_host: ""
+udp_port: 1118
+udp_timeout: 30.0
