@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import multiprocessing as mp
 import time
 from typing import Protocol, cast, final
 import mujoco
-import mujoco.viewer
 import numpy as np
 from numpy.typing import NDArray
 
@@ -44,6 +44,204 @@ class _SupportsGet(Protocol):
     def get(self, key: str) -> object | None: ...
 
 
+# ---------------------------------------------------------------------------
+# Subprocess viewer functions (each runs in its own process with GLFW context)
+# ---------------------------------------------------------------------------
+
+def _robot_viewer_proc(
+    xml_path: str,
+    qpos_arr: mp.Array,
+    qpos_len: int,
+    shutdown: mp.Event,
+    alive: mp.Value,
+    foot_z_correction: bool,
+    left_foot_name: str,
+    right_foot_name: str,
+    title: str = "",
+    win_x: int = -1,
+    win_y: int = -1,
+) -> None:
+    """Subprocess: robot model viewer — displays qpos with optional foot Z fix.
+
+    Used for both sim2sim (physics result) and retarget (kinematic result).
+    """
+    import mujoco
+    import mujoco.viewer
+    import numpy as np
+    import os
+    import re
+
+    # Set window title via model name and position via GLFW hints
+    if title:
+        with open(xml_path) as f:
+            xml_str = f.read()
+        xml_str = re.sub(r'<mujoco\s+model="[^"]*"', f'<mujoco model="{title}"', xml_str)
+        os.chdir(os.path.dirname(os.path.abspath(xml_path)))
+        model = mujoco.MjModel.from_xml_string(xml_str)
+    else:
+        model = mujoco.MjModel.from_xml_path(xml_path)
+    data = mujoco.MjData(model)
+
+    left_foot_id = -1
+    right_foot_id = -1
+    if foot_z_correction:
+        left_foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, left_foot_name)
+        right_foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, right_foot_name)
+
+    pelvis_id = -1
+    try:
+        pelvis_id = model.body("pelvis").id
+    except Exception:
+        pass
+
+    # Set initial window position via GLFW hints (GLFW 3.4+)
+    if win_x >= 0 and win_y >= 0:
+        try:
+            import glfw
+            glfw.init()
+            glfw.window_hint(glfw.POSITION_X, win_x)
+            glfw.window_hint(glfw.POSITION_Y, win_y)
+        except Exception:
+            pass
+
+    v = mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False)
+    v.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = 0
+    v.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 0
+    v.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 0
+    v.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = 0
+    v.cam.distance = 2.0
+    alive.value = 1
+
+    try:
+        while v.is_running() and not shutdown.is_set():
+            with qpos_arr.get_lock():
+                qpos = np.array(qpos_arr[:qpos_len], dtype=np.float64)
+
+            data.qpos[:qpos_len] = qpos
+            data.qvel[:] = 0
+            mujoco.mj_forward(model, data)
+
+            if foot_z_correction and left_foot_id >= 0 and right_foot_id >= 0:
+                lowest_z = min(data.xpos[left_foot_id][2], data.xpos[right_foot_id][2])
+                if lowest_z < 0.0:
+                    data.qpos[2] -= lowest_z
+                    mujoco.mj_forward(model, data)
+
+            if pelvis_id >= 0:
+                v.cam.lookat[:] = data.xpos[pelvis_id]
+            else:
+                v.cam.lookat[:] = [data.qpos[0], data.qpos[1], 0.8]
+            v.sync()
+            time.sleep(0.02)
+    finally:
+        alive.value = 0
+        try:
+            v.close()
+        except Exception:
+            pass
+
+
+def _bvh_viewer_proc(
+    parents_list: list[int],
+    pos_arr: mp.Array,
+    n_bones: int,
+    shutdown: mp.Event,
+    alive: mp.Value,
+    win_x: int = -1,
+    win_y: int = -1,
+) -> None:
+    """Subprocess: BVH skeleton viewer using matplotlib 3D (matches render_sim.py)."""
+    import matplotlib
+    matplotlib.use("TkAgg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    parents = parents_list
+
+    fig = plt.figure(figsize=(6.4, 4.8))
+    ax = fig.add_subplot(111, projection="3d")
+    fig.canvas.manager.set_window_title("BVH Skeleton")
+
+    # Set window position via Tk geometry
+    if win_x >= 0 and win_y >= 0:
+        try:
+            fig.canvas.manager.window.wm_geometry(f"+{win_x}+{win_y}")
+        except Exception:
+            pass
+
+    plt.ion()
+    plt.show(block=False)
+    alive.value = 1
+
+    try:
+        while not shutdown.is_set():
+            # Check if window was closed
+            if not plt.fignum_exists(fig.number):
+                break
+
+            with pos_arr.get_lock():
+                pos = np.array(pos_arr[:n_bones * 3], dtype=np.float64).reshape(n_bones, 3)
+
+            ax.cla()
+            root = pos[0]
+            ax.set_xlim(root[0] - 1.0, root[0] + 1.0)
+            ax.set_ylim(root[1] - 1.0, root[1] + 1.0)
+            ax.set_zlim(0.0, 2.0)
+            ax.set_xlabel("X")
+            ax.set_ylabel("Y")
+            ax.set_zlabel("Z")
+            ax.set_title("BVH Skeleton")
+            ax.view_init(elev=20, azim=135)
+
+            for j in range(n_bones):
+                p = parents[j]
+                if p < 0:
+                    continue
+                ax.plot(
+                    [pos[p, 0], pos[j, 0]],
+                    [pos[p, 1], pos[j, 1]],
+                    [pos[p, 2], pos[j, 2]],
+                    "b-", linewidth=2,
+                )
+            ax.scatter(pos[:, 0], pos[:, 1], pos[:, 2], c="red", s=15, depthshade=True)
+
+            fig.canvas.draw_idle()
+            fig.canvas.flush_events()
+            plt.pause(0.03)
+    finally:
+        alive.value = 0
+        try:
+            plt.close(fig)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Helper: create a robot-model viewer subprocess
+# ---------------------------------------------------------------------------
+
+def _start_robot_viewer(
+    xml_path: str, nq: int, foot_z_correction: bool,
+    title: str = "", win_x: int = -1, win_y: int = -1,
+) -> tuple[mp.Process, mp.Array, mp.Value, mp.Event]:
+    """Launch a subprocess viewer for a robot model.
+
+    Returns (process, qpos_shared_array, alive_flag, shutdown_event).
+    """
+    arr = mp.Array("d", nq)
+    shutdown = mp.Event()
+    alive = mp.Value("i", 0)
+    proc = mp.Process(
+        target=_robot_viewer_proc,
+        args=(xml_path, arr, nq, shutdown, alive,
+              foot_z_correction, "left_ankle_roll_link", "right_ankle_roll_link",
+              title, win_x, win_y),
+        daemon=True,
+    )
+    proc.start()
+    return proc, arr, alive, shutdown
+
+
 @final
 class SimulationLoop:
     def __init__(
@@ -53,6 +251,7 @@ class SimulationLoop:
         obs_builder: ObservationBuilder,
         bus: MessageBus,
         cfg: object,
+        viewers: set[str] | None = None,
         viewer: bool = False,
     ) -> None:
         self.robot: Robot = robot
@@ -82,27 +281,59 @@ class SimulationLoop:
         self._last_action: Float32Array = np.zeros((self._num_actions,), dtype=np.float32)
         self._last_retarget_qpos: Float64Array | None = None
 
-        # Viewer
-        self._viewer_handle: object | None = None
-        self._pelvis_body_id: int | None = None
-        if viewer:
-            model = getattr(self.robot, "model", None)
-            data = getattr(self.robot, "data", None)
-            if model is not None and data is not None:
-                v = mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False)
-                v.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = 0
-                v.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 0
-                v.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 0
-                v.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = 0
-                v.cam.distance = 2.0
-                self._viewer_handle = v
-                try:
-                    self._pelvis_body_id = model.body("pelvis").id
-                except Exception:
-                    self._pelvis_body_id = None
-            else:
-                import warnings
-                warnings.warn("viewer=True but robot has no model/data attributes; skipping viewer")
+        # Resolve viewer set (support legacy viewer=bool kwarg)
+        if viewers is not None:
+            self._viewers: set[str] = set(viewers)
+        elif viewer:
+            self._viewers = {"sim2sim"}
+        else:
+            self._viewers = set()
+
+        # All viewers run in subprocesses to avoid GLFW/GLX single-context limit.
+        # Each entry: (process, shared_array, alive_flag, shutdown_event)
+        self._sub_viewers: dict[str, tuple[mp.Process, mp.Array, mp.Value, mp.Event]] = {}
+
+        xml_path = getattr(self.robot, "xml_path", None)
+        model = getattr(self.robot, "model", None)
+
+        # Window layout: spread horizontally, 850px apart
+        # Order: BVH (left) | Retarget (middle) | Sim2Sim (right)
+        _win_positions = {"bvh": (50, 50), "retarget": (900, 50), "sim2sim": (1750, 50)}
+
+        if xml_path is not None and model is not None:
+            nq = model.nq
+            # --- sim2sim viewer (shows physics result, no foot Z fix) ---
+            if "sim2sim" in self._viewers:
+                wx, wy = _win_positions["sim2sim"]
+                proc, arr, alive, shutdown = _start_robot_viewer(
+                    xml_path, nq, foot_z_correction=False,
+                    title="Sim2Sim", win_x=wx, win_y=wy,
+                )
+                self._sub_viewers["sim2sim"] = (proc, arr, alive, shutdown)
+
+            # --- retarget viewer (shows kinematic target, with foot Z fix) ---
+            if "retarget" in self._viewers:
+                wx, wy = _win_positions["retarget"]
+                proc, arr, alive, shutdown = _start_robot_viewer(
+                    xml_path, nq, foot_z_correction=True,
+                    title="Retarget", win_x=wx, win_y=wy,
+                )
+                self._sub_viewers["retarget"] = (proc, arr, alive, shutdown)
+
+        # BVH viewer subprocess (created lazily in run() — needs bone topology)
+        self._bvh_pos_arr: mp.Array | None = None
+        self._bvh_n_bones: int = 0
+
+    def _any_viewer_active(self) -> bool:
+        """Return True if at least one viewer window is still open."""
+        for _, _, alive, _ in self._sub_viewers.values():
+            if alive.value:
+                return True
+        return False
+
+    def _has_any_viewer(self) -> bool:
+        """Return True if any viewer was requested."""
+        return bool(self._viewers)
 
     def run(
         self,
@@ -111,27 +342,56 @@ class SimulationLoop:
         num_steps: int,
         recorder: Recorder | None = None,
     ) -> dict[str, float | int]:
+        # --- Lazily create BVH viewer subprocess (matplotlib 3D) ---
+        if "bvh" in self._viewers and "bvh" not in self._sub_viewers:
+            bone_names: list[str] | None = getattr(input_provider, "bone_names", None)
+            bone_parents: np.ndarray | None = getattr(input_provider, "bone_parents", None)
+            if bone_names is not None and bone_parents is not None and len(bone_names) > 0:
+                n_bones = len(bone_names)
+                pos_arr = mp.Array("d", n_bones * 3)
+                shutdown = mp.Event()
+                alive = mp.Value("i", 0)
+                bvh_wx, bvh_wy = 50, 50  # leftmost position
+                proc = mp.Process(
+                    target=_bvh_viewer_proc,
+                    args=(list(bone_parents.astype(int)), pos_arr, n_bones, shutdown, alive,
+                          bvh_wx, bvh_wy),
+                    daemon=True,
+                )
+                proc.start()
+                self._sub_viewers["bvh"] = (proc, pos_arr, alive, shutdown)
+                self._bvh_pos_arr = pos_arr
+                self._bvh_n_bones = n_bones
+
         steps_done = 0
-        viewer = self._viewer_handle
+        has_viewers = self._has_any_viewer()
         policy_dt = 1.0 / self.policy_hz
-        wall_start = time.monotonic() if viewer is not None else 0.0
+        wall_start = time.monotonic() if has_viewers else 0.0
+
+        # Wait for subprocess viewers to signal alive (up to 10s)
+        if self._sub_viewers:
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                if all(alive.value for _, _, alive, _ in self._sub_viewers.values()):
+                    break
+                time.sleep(0.1)
 
         # Frame-rate alignment: BVH fps may differ from policy Hz.
-        # When BVH fps < policy Hz, multiple policy steps reuse the same BVH frame.
         input_fps: float = float(getattr(input_provider, "fps", self.policy_hz))
         last_bvh_idx = -1
-        cached_human_frame: object = None
+        cached_human_frame: dict | None = None
         cached_retargeted: object = None
 
         try:
             for _ in range(num_steps):
-                if viewer is not None and not viewer.is_running():
+                if has_viewers and not self._any_viewer_active():
                     break
 
                 policy_time = steps_done * policy_dt
                 bvh_idx = int(policy_time * input_fps)
 
-                if bvh_idx != last_bvh_idx:
+                new_bvh_frame = bvh_idx != last_bvh_idx
+                if new_bvh_frame:
                     if not input_provider.is_available():
                         break
                     cached_human_frame = input_provider.get_frame()
@@ -165,14 +425,39 @@ class SimulationLoop:
                 self._publish(mimic_obs, action, final_state)
                 self._record(recorder, final_state, mimic_obs, action, target_dof_pos, torque)
 
-                if viewer is not None:
-                    # Camera tracks pelvis
-                    if self._pelvis_body_id is not None:
-                        data = getattr(self.robot, "data", None)
-                        if data is not None:
-                            viewer.cam.lookat[:] = data.xpos[self._pelvis_body_id]
-                    viewer.sync()
-                    # Real-time pacing: sleep until wall clock catches up with sim time
+                # --- Write sim2sim qpos (post-physics) to shared memory ---
+                sim2sim_entry = self._sub_viewers.get("sim2sim")
+                if sim2sim_entry is not None and sim2sim_entry[2].value:
+                    robot_data = getattr(self.robot, "data", None)
+                    if robot_data is not None:
+                        sim_qpos = np.asarray(robot_data.qpos, dtype=np.float64)
+                        arr = sim2sim_entry[1]
+                        with arr.get_lock():
+                            arr[:len(sim_qpos)] = sim_qpos.tolist()
+
+                # --- Write retarget qpos to shared memory ---
+                retarget_entry = self._sub_viewers.get("retarget")
+                if retarget_entry is not None and retarget_entry[2].value:
+                    arr = retarget_entry[1]
+                    with arr.get_lock():
+                        arr[:len(qpos)] = qpos.tolist()
+
+                # --- Write BVH positions to shared memory ---
+                if new_bvh_frame and cached_human_frame is not None:
+                    bvh_entry = self._sub_viewers.get("bvh")
+                    if bvh_entry is not None and bvh_entry[2].value and self._bvh_pos_arr is not None:
+                        bone_names_attr: list[str] | None = getattr(input_provider, "bone_names", None)
+                        if bone_names_attr is not None:
+                            n = self._bvh_n_bones
+                            pos_flat = np.zeros(n * 3, dtype=np.float64)
+                            for i, bname in enumerate(bone_names_attr):
+                                if bname in cached_human_frame:
+                                    pos_flat[i * 3:(i + 1) * 3] = cached_human_frame[bname][0]
+                            with self._bvh_pos_arr.get_lock():
+                                self._bvh_pos_arr[:n * 3] = pos_flat.tolist()
+
+                # Real-time pacing
+                if has_viewers:
                     sim_time = (steps_done + 1) * policy_dt
                     wall_elapsed = time.monotonic() - wall_start
                     sleep_time = sim_time - wall_elapsed
@@ -183,12 +468,14 @@ class SimulationLoop:
                 self._last_retarget_qpos = qpos.copy()
                 steps_done += 1
         finally:
-            if self._viewer_handle is not None:
-                try:
-                    self._viewer_handle.close()
-                except Exception:
-                    pass
-                self._viewer_handle = None
+            # Shutdown all subprocess viewers
+            for name, (proc, _, _, shutdown) in self._sub_viewers.items():
+                shutdown.set()
+            for name, (proc, _, _, _) in self._sub_viewers.items():
+                proc.join(timeout=3)
+                if proc.is_alive():
+                    proc.terminate()
+            self._sub_viewers.clear()
 
         final_state = self.robot.get_state()
         return {

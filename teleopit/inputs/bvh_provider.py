@@ -7,6 +7,8 @@ from scipy.spatial.transform import Rotation as R
 
 def _load_bvh_file(bvh_file: str, format: str = "lafan1"):
     data = read_bvh(bvh_file)
+    bone_names = list(data.bones)
+    bone_parents = np.array(data.parents, dtype=np.int32)
     global_data = utils.quat_fk(data.quats, data.pos, data.parents)
 
     rotation_matrix = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]])
@@ -75,7 +77,7 @@ def _load_bvh_file(bvh_file: str, format: str = "lafan1"):
         frames = frames[::2]
         fps = 30
 
-    return frames, human_height, fps
+    return frames, human_height, fps, bone_names, bone_parents
 
 
 class BVHInputProvider:
@@ -83,7 +85,7 @@ class BVHInputProvider:
     def __init__(self, bvh_path: str, human_format: str = "lafan1"):
         self.bvh_path = bvh_path
         self.human_format = human_format
-        self._frames, self._human_height, self._fps = _load_bvh_file(bvh_path, format=human_format)
+        self._frames, self._human_height, self._fps, self._bone_names, self._bone_parents = _load_bvh_file(bvh_path, format=human_format)
         self._current_frame = 0
         
     def get_frame(self) -> Dict[str, Tuple[Any, Any]]:
@@ -114,3 +116,11 @@ class BVHInputProvider:
     @property
     def human_height(self) -> float:
         return self._human_height
+
+    @property
+    def bone_names(self) -> list[str]:
+        return self._bone_names
+
+    @property
+    def bone_parents(self) -> np.ndarray:
+        return self._bone_parents

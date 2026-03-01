@@ -72,8 +72,14 @@ python scripts/run_sim.py input.bvh_file=data/lafan1/dance1_subject2.bvh
 # 使用 hc_mocap 格式（自动推导 human_format=bvh_hc_mocap）
 python scripts/run_sim.py input.bvh_file=data/hc_mocap/walk.bvh input.bvh_format=hc_mocap
 
-# 关闭可视化窗口
-python scripts/run_sim.py viewer=false
+# 同时开启 BVH 骨架、运动学重定向、物理仿真三个可视化窗口
+python scripts/run_sim.py input.bvh_file=data/hc_mocap/walk.bvh input.bvh_format=hc_mocap viewers=all
+
+# 只开 retarget + sim2sim（不显示 BVH 原始骨架）
+python scripts/run_sim.py 'viewers=[retarget,sim2sim]'
+
+# 关闭所有可视化窗口
+python scripts/run_sim.py viewers=none
 
 # 运行更多步数并录制 HDF5
 python scripts/run_sim.py num_steps=5000 record=true
@@ -86,10 +92,12 @@ python scripts/run_sim.py num_steps=5000 record=true
 | `input.bvh_file` | (见 bvh.yaml) | BVH 文件路径 |
 | `input.bvh_format` | `lafan1` | BVH 格式：`lafan1` 或 `hc_mocap` |
 | `num_steps` | `1000` | 仿真步数 |
-| `viewer` | `true` | 是否开启 MuJoCo 可视化窗口 |
+| `viewers` | `"sim2sim"` | 可视化窗口，支持逗号分隔：`bvh`, `retarget`, `sim2sim`；特殊值：`all`（全开）、`none`（无窗口） |
 | `record` | `false` | 是否录制 HDF5 数据 |
 | `policy_hz` | `50.0` | 策略推理频率 |
 | `pd_hz` | `1000.0` | PD 控制频率 |
+
+> **多 Viewer 模式**：`viewers` 支持三种窗口类型——`bvh`（BVH 原始骨架可视化，matplotlib 3D 散点+连线，与 `render_sim.py` 一致）、`retarget`（运动学重定向结果，MuJoCo 设 qpos + 脚底 Z 修正）、`sim2sim`（MuJoCo 物理仿真结果）。所有 viewer 均在独立子进程中运行，关闭所有窗口时仿真自动结束。向后兼容旧的 `+viewer=true/false` 写法。
 
 > **帧率对齐**：RL policy 以 `policy_hz`（默认 50Hz）运行，而 BVH 输入通常为 30fps（hc_mocap 降采样后）。`SimulationLoop` 会自动按时间对齐，多个 policy step 复用同一 BVH 帧，确保动作以原始速度播放。`num_steps` 指 policy step 数，对应仿真时长 = `num_steps / policy_hz` 秒。
 

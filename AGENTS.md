@@ -24,7 +24,7 @@ teleopit/                 # Core package
 ├── pipeline.py           # TeleopPipeline — assembles and runs the full pipeline
 ├── bus/                  # InProcessBus message pub/sub
 ├── configs/              # Hydra YAML configs
-│   ├── default.yaml      # Top-level config composing robot + controller + input
+│   ├── default.yaml      # Top-level config: viewers, policy_hz, pd_hz + robot/controller/input
 │   ├── robot/g1.yaml     # G1 robot: XML path, PD gains, default angles, action dims
 │   ├── controller/rl_policy.yaml
 │   └── input/bvh.yaml
@@ -32,7 +32,7 @@ teleopit/                 # Core package
 │   ├── rl_policy.py      # RLPolicyController — ONNX inference, returns RAW action (no scaling)
 │   └── observation.py    # TWIST2ObservationBuilder — 1402D obs (127×11 history + 35 mimic)
 ├── inputs/
-│   └── bvh_provider.py   # BVHInputProvider — parses lafan1/hc_mocap BVH formats
+│   └── bvh_provider.py   # BVHInputProvider — parses BVH; exposes fps, bone_names, bone_parents
 ├── retargeting/
 │   ├── core.py           # RetargetingModule + extract_mimic_obs()
 │   └── gmr/              # Self-contained GMR (assets, IK solver, 17+ robot configs)
@@ -61,8 +61,46 @@ outputs/                  # Rendered videos (gitignored)
 
 ### Sim2Sim Pipeline
 - Policy runs at 50Hz, PD control at 1000Hz (decimation=20), sim_dt=0.001
-- Action flow: `compute_action()` returns RAW action → `get_target_dof_pos()` applies clip [-10,10] + scale 0.5 ONCE
+- Action flow: `compute_action()` returns RAW action → `get_target_dof_pos()` applies clip [-10,10] + scale 0.5 + default_dof_pos
 - Must use `g1_sim2sim_29dof.xml` for sim2sim (not `g1_mocap_29dof.xml` which clamps torques to ±1 Nm)
+
+### Multi-Viewer Support
+`SimulationLoop` supports three simultaneous viewer windows controlled by the `viewers` config:
+
+```bash
+python scripts/run_sim.py viewers=sim2sim                  # default: physics sim only
+python scripts/run_sim.py 'viewers=[bvh,retarget,sim2sim]'  # all three windows
+python scripts/run_sim.py viewers=all                      # same as above
+python scripts/run_sim.py 'viewers=[retarget,sim2sim]'     # skip BVH skeleton
+python scripts/run_sim.py viewers=none                     # headless
+```
+
+| Viewer | Backend | Update method |
+|--------|---------|---------------|
+| **sim2sim** | MuJoCo (subprocess) | Reads post-physics `robot.data.qpos` via shared memory → `mj_forward` |
+| **retarget** | MuJoCo (subprocess) | Reads retarget `qpos` via shared memory → `mj_forward` → foot Z correction |
+| **bvh** | matplotlib 3D (subprocess) | Reads bone positions via shared memory → scatter + line plot (matches `render_sim.py`) |
+
+- All viewers run in **separate subprocesses** (GLFW/GLX only supports one window per process)
+- Data exchange: main process writes qpos / mocap data to `multiprocessing.Array` shared memory
+- BVH viewer is created lazily in `run()` (needs `bone_names`/`bone_parents` from `InputProvider`)
+- Retarget viewer foot Z correction uses `left_ankle_roll_link` / `right_ankle_roll_link` body IDs
+- Simulation breaks when **all** active viewer windows are closed
+- Backward compatible: `+viewer=true` maps to `viewers=sim2sim`, `+viewer=false` maps to `viewers=none`
+- Hydra quoting: multi-viewer values with commas need shell quotes, e.g. `'viewers=[retarget,sim2sim]'`
+
+**default_dof_pos 传递（关键）**：RL policy 输出的 action 是相对于默认站姿的**偏移量**，目标关节角计算公式为：
+
+```
+target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
+```
+
+`default_dof_pos` 来自 `robot/g1.yaml` 的 `default_angles`（膝盖微屈 0.4 rad、肘部弯曲 1.2 rad 等）。`TeleopPipeline` 在初始化时自动将 `robot_cfg.default_angles` 传递给 `controller_cfg.default_dof_pos`。若此传递缺失，target 会缺少站姿偏移（膝盖 0→伸直、肘部 0→伸直），机器人无法维持平衡。
+
+### 帧率对齐
+- BVH 输入帧率（如 hc_mocap 30fps）可能与 policy 频率（50Hz）不同
+- `SimulationLoop` 按时间对齐：`bvh_idx = int(policy_time × input_fps)`，多个 policy step 复用同一 BVH 帧
+- `bvh_provider.py` 的 `fps` 属性返回降采样后的实际帧率（hc_mocap 60→30fps）
 
 ### TWIST2 Observation
 - 1402D vector: 127 features × 11 timesteps (history) + 35 mimic features

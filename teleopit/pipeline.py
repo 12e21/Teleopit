@@ -31,6 +31,35 @@ def _cfg_set(cfg: Any, key: str, value: Any) -> None:
     setattr(cfg, key, value)
 
 
+def _parse_viewers(cfg: Any) -> set[str]:
+    """Parse viewers config into a set of viewer names.
+
+    Supports the new ``viewers`` key (comma-separated string or the
+    special values ``"all"`` / ``"none"``) as well as the legacy
+    ``viewer: true/false`` boolean.
+    """
+    viewers_raw = _cfg_get(cfg, "viewers", None)
+    if viewers_raw is not None:
+        # Support Hydra list syntax (e.g. [retarget,sim2sim])
+        if hasattr(viewers_raw, "__iter__") and not isinstance(viewers_raw, str):
+            return {str(v).strip().lower() for v in viewers_raw if str(v).strip()}
+        s = str(viewers_raw).strip().lower()
+        if s == "all":
+            return {"bvh", "retarget", "sim2sim"}
+        if s in ("none", "false", ""):
+            return set()
+        # Strip surrounding quotes/brackets from Hydra
+        s = s.strip("'\"[]")
+        return {v.strip() for v in s.split(",") if v.strip()}
+
+    # Backward compat: legacy ``viewer: true/false``
+    legacy = _cfg_get(cfg, "viewer", None)
+    if legacy is not None:
+        return {"sim2sim"} if bool(legacy) else set()
+
+    return set()
+
+
 class _LoopingInputProvider:
     def __init__(self, provider: BVHInputProvider) -> None:
         self._provider = provider
@@ -42,6 +71,18 @@ class _LoopingInputProvider:
 
     def is_available(self) -> bool:
         return True
+
+    @property
+    def fps(self) -> int:
+        return self._provider.fps
+
+    @property
+    def bone_names(self) -> list[str]:
+        return self._provider.bone_names
+
+    @property
+    def bone_parents(self) -> Any:
+        return self._provider.bone_parents
 
 
 class TeleopPipeline:
@@ -86,14 +127,14 @@ class TeleopPipeline:
             "policy_hz": float(_cfg_get(cfg, "policy_hz", 50.0)),
             "pd_hz": float(_cfg_get(cfg, "pd_hz", 1000.0)),
         }
-        viewer_enabled = bool(_cfg_get(cfg, "viewer", False))
+        viewer_set = _parse_viewers(cfg)
         self.loop = SimulationLoop(
             cast(Any, self.robot),
             cast(Any, self.controller),
             cast(Any, self.obs_builder),
             cast(Any, self.bus),
             sim_cfg,
-            viewer=viewer_enabled,
+            viewers=viewer_set,
         )
 
     def run(self, num_steps: int, record: bool = False) -> dict[str, float | int | str]:

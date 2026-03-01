@@ -6,7 +6,7 @@ defaults:
 
 policy_hz: 50.0
 pd_hz: 1000.0
-viewer: true
+viewers: "sim2sim"
 
 hydra:
   run:
