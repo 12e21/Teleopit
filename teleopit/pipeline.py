@@ -8,7 +8,7 @@ from omegaconf import DictConfig
 from teleopit.bus.in_process import InProcessBus
 from teleopit.controllers.observation import TWIST2ObservationBuilder
 from teleopit.controllers.rl_policy import RLPolicyController
-from teleopit.inputs import BVHInputProvider
+from teleopit.inputs import BVHInputProvider, UDPBVHInputProvider
 from teleopit.recording.hdf5_recorder import HDF5Recorder
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.robots.mujoco_robot import MuJoCoRobot
@@ -138,8 +138,8 @@ class TeleopPipeline:
         )
 
     def run(self, num_steps: int, record: bool = False) -> dict[str, float | int | str]:
-        if num_steps <= 0:
-            raise ValueError("num_steps must be positive")
+        if num_steps < 0:
+            raise ValueError("num_steps must be non-negative (0 = infinite)")
 
         if not record:
             return dict(self.loop.run(cast(Any, self.input_provider), cast(Any, self.retargeter), num_steps=num_steps))
@@ -164,6 +164,22 @@ class TeleopPipeline:
 
     def _build_input_provider(self, input_cfg: Any) -> Any:
         provider_kind = str(_cfg_get(input_cfg, "provider", "bvh")).lower()
+
+        if provider_kind == "udp_bvh":
+            ref_bvh = str(_cfg_get(input_cfg, "reference_bvh", ""))
+            if not ref_bvh:
+                raise ValueError("input.reference_bvh must be set for udp_bvh provider")
+            ref_path = Path(ref_bvh)
+            if not ref_path.is_absolute():
+                ref_path = (self._project_root / ref_path).resolve()
+            return UDPBVHInputProvider(
+                reference_bvh=str(ref_path),
+                host=str(_cfg_get(input_cfg, "udp_host", "")),
+                port=int(_cfg_get(input_cfg, "udp_port", 1118)),
+                human_format=str(_cfg_get(input_cfg, "bvh_format", "hc_mocap")),
+                timeout=float(_cfg_get(input_cfg, "udp_timeout", 30.0)),
+            )
+
         bvh_path = str(_cfg_get(input_cfg, "bvh_file", ""))
         if not bvh_path:
             raise ValueError("input.bvh_file must be set")
@@ -205,11 +221,13 @@ class TeleopPipeline:
                 _cfg_set(controller_cfg, "policy_path", str(default_policy.resolve()))
 
         if input_cfg is not None:
-            bvh_file = str(_cfg_get(input_cfg, "bvh_file", ""))
-            if not bvh_file or bvh_file == "None":
-                default_bvh = self._project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "xsens_bvh_test" / "251021_04_boxing_120Hz_cm_3DsMax.bvh"
-                _cfg_set(input_cfg, "bvh_file", str(default_bvh.resolve()))
-                if _cfg_get(input_cfg, "bvh_format", None) is None:
-                    _cfg_set(input_cfg, "bvh_format", "lafan1")
-                if _cfg_get(input_cfg, "human_format", None) is None:
-                    _cfg_set(input_cfg, "human_format", "bvh_xsens")
+            provider_kind = str(_cfg_get(input_cfg, "provider", "bvh")).lower()
+            if provider_kind != "udp_bvh":
+                bvh_file = str(_cfg_get(input_cfg, "bvh_file", ""))
+                if not bvh_file or bvh_file == "None":
+                    default_bvh = self._project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "xsens_bvh_test" / "251021_04_boxing_120Hz_cm_3DsMax.bvh"
+                    _cfg_set(input_cfg, "bvh_file", str(default_bvh.resolve()))
+                    if _cfg_get(input_cfg, "bvh_format", None) is None:
+                        _cfg_set(input_cfg, "bvh_format", "lafan1")
+                    if _cfg_get(input_cfg, "human_format", None) is None:
+                        _cfg_set(input_cfg, "human_format", "bvh_xsens")

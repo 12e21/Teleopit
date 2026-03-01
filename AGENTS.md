@@ -11,7 +11,7 @@ Config: Hydra/OmegaConf YAML files in `teleopit/configs/`
 ## Architecture
 
 ```
-InputProvider (BVH/VR) → Retargeter (GMR) → ObservationBuilder (1402D) → Controller (ONNX RL) → Robot (MuJoCo + PD)
+InputProvider (BVH file / UDP realtime / VR) → Retargeter (GMR) → ObservationBuilder (1402D) → Controller (ONNX RL) → Robot (MuJoCo + PD)
 ```
 
 Module-internal isolation: all modules run in-process, communicate via `InProcessBus` (zero-copy). Core interfaces defined as `typing.Protocol` in `teleopit/interfaces.py`.
@@ -24,15 +24,18 @@ teleopit/                 # Core package
 ├── pipeline.py           # TeleopPipeline — assembles and runs the full pipeline
 ├── bus/                  # InProcessBus message pub/sub
 ├── configs/              # Hydra YAML configs
-│   ├── default.yaml      # Top-level config: viewers, policy_hz, pd_hz + robot/controller/input
+│   ├── default.yaml      # Offline sim top-level config: viewers, policy_hz, pd_hz
+│   ├── online.yaml       # Online sim2sim top-level config: realtime=true, num_steps=0
 │   ├── robot/g1.yaml     # G1 robot: XML path, PD gains, default angles, action dims
 │   ├── controller/rl_policy.yaml
-│   └── input/bvh.yaml
+│   ├── input/bvh.yaml    # Offline BVH file input
+│   └── input/udp_bvh.yaml # UDP realtime BVH input (reference_bvh, port, timeout)
 ├── controllers/
 │   ├── rl_policy.py      # RLPolicyController — ONNX inference, returns RAW action (no scaling)
 │   └── observation.py    # TWIST2ObservationBuilder — 1402D obs (127×11 history + 35 mimic)
 ├── inputs/
-│   └── bvh_provider.py   # BVHInputProvider — parses BVH; exposes fps, bone_names, bone_parents
+│   ├── bvh_provider.py       # BVHInputProvider — offline BVH file; exposes fps, bone_names, bone_parents
+│   └── udp_bvh_provider.py   # UDPBVHInputProvider — realtime UDP BVH; daemon receiver thread
 ├── retargeting/
 │   ├── core.py           # RetargetingModule + extract_mimic_obs()
 │   └── gmr/              # Self-contained GMR (assets, IK solver, 17+ robot configs)
@@ -45,7 +48,9 @@ teleopit/                 # Core package
 │   └── loop.py           # SimulationLoop — PD control at 1000Hz, policy at 50Hz
 └── recording/            # HDF5Recorder
 scripts/
-├── run_sim.py            # Run teleoperation pipeline
+├── run_sim.py            # Offline BVH sim2sim pipeline
+├── run_online_sim.py     # Online realtime UDP sim2sim (uses online.yaml)
+├── send_bvh_udp.py       # UDP BVH test sender (--bvh, --loop, --fps, --downsample)
 ├── render_sim.py         # Render single BVH → 3 videos (bvh skeleton, retarget, sim2sim), supports --format flag
 ├── render_all_lafan1.sh  # Batch render all data/lafan1/*.bvh
 └── compute_ik_offsets.py # Compute IK quaternion offsets for new BVH formats (see IK Offset Calibration)
@@ -96,6 +101,31 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 ```
 
 `default_dof_pos` 来自 `robot/g1.yaml` 的 `default_angles`（膝盖微屈 0.4 rad、肘部弯曲 1.2 rad 等）。`TeleopPipeline` 在初始化时自动将 `robot_cfg.default_angles` 传递给 `controller_cfg.default_dof_pos`。若此传递缺失，target 会缺少站姿偏移（膝盖 0→伸直、肘部 0→伸直），机器人无法维持平衡。
+
+### Online Sim2Sim (UDP 实时输入)
+
+支持通过 UDP 接收实时动捕 BVH 数据，每个 UDP 包 = 一行 BVH motion data（159 floats for hc_mocap），接收频率约 30Hz。
+
+```bash
+# Terminal 1: start online sim
+python scripts/run_online_sim.py viewers=sim2sim
+
+# Terminal 2: send test data
+python scripts/send_bvh_udp.py --bvh data/hc_mocap/wander.bvh --loop
+```
+
+**`UDPBVHInputProvider` 关键设计**：
+- 从 `reference_bvh` 解析骨骼元数据（bone_names, parents, offsets, euler_order, channels）
+- 后台 daemon 线程 `recvfrom` → 逐帧处理（`process_single_bvh_frame()`）
+- `_latest_frame` 通过 `threading.Lock` 保护，`_frame_ready` 通过 `threading.Event` 阻塞首帧
+- `get_frame()` 始终返回最新帧（无内部计数器），与 `SimulationLoop` 的 `bvh_idx` 兼容
+- `is_available()` 持续返回 True → 循环不因 input 耗尽退出
+- `fps=30`（固定），`human_height` 从 reference BVH frame-0 FK 计算
+
+**`SimulationLoop` 变更**：
+- 新增 `realtime` config flag：即使无 viewer 也进行 wall-clock 限速
+- `num_steps=0` 表示无限循环（`max_steps = 2**63`）
+- 添加 `KeyboardInterrupt` 处理，Ctrl+C 优雅退出
 
 ### 帧率对齐
 - BVH 输入帧率（如 hc_mocap 30fps）可能与 policy 频率（50Hz）不同

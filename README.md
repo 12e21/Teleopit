@@ -101,6 +101,49 @@ python scripts/run_sim.py num_steps=5000 record=true
 
 > **帧率对齐**：RL policy 以 `policy_hz`（默认 50Hz）运行，而 BVH 输入通常为 30fps（hc_mocap 降采样后）。`SimulationLoop` 会自动按时间对齐，多个 policy step 复用同一 BVH 帧，确保动作以原始速度播放。`num_steps` 指 policy step 数，对应仿真时长 = `num_steps / policy_hz` 秒。
 
+### 实时 Online Sim2Sim（UDP 输入）
+
+除了离线 BVH 文件回放，Teleopit 还支持通过 UDP 接收实时动捕数据进行 online sim2sim。每个 UDP 包对应一行 BVH motion data（与 `data/hc_mocap/wander.bvh` 格式一致，159 个 float），接收频率约 30Hz。
+
+**启动 online 仿真：**
+
+```bash
+# 终端 1: 启动 online sim（默认监听 UDP 端口 1118，等待数据到达后开始仿真）
+python scripts/run_online_sim.py
+
+# 终端 2: 发送测试数据（从 BVH 文件读取并循环发送）
+python scripts/send_bvh_udp.py --bvh data/hc_mocap/wander.bvh --loop
+```
+
+**常用参数：**
+
+```bash
+# 全部 viewer（BVH 骨架 + 运动学重定向 + 物理仿真）
+python scripts/run_online_sim.py viewers=all
+
+# 无窗口模式
+python scripts/run_online_sim.py viewers=none
+
+# 自定义 UDP 端口
+python scripts/run_online_sim.py input.udp_port=1119
+
+# 指定步数（默认 num_steps=0 表示无限循环，Ctrl+C 退出）
+python scripts/run_online_sim.py num_steps=5000
+```
+
+**send_bvh_udp.py 参数：**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--bvh` | (必选) | BVH 文件路径 |
+| `--host` | `127.0.0.1` | 目标 IP |
+| `--port` | `1118` | 目标 UDP 端口 |
+| `--fps` | `0` | 发送帧率（0 = 使用 BVH 原始 Frame Time） |
+| `--loop` | `false` | 循环发送 |
+| `--downsample` | `1` | 每 N 帧发送一帧 |
+
+> **工作原理**：`UDPBVHInputProvider` 从一个参考 BVH 文件（`reference_bvh`）解析骨骼层级结构（骨骼名、父子关系、偏移量、Euler 旋转顺序），然后在后台线程中通过 `recvfrom` 接收 UDP 数据包，逐帧完成 Euler→四元数→FK→坐标变换，并以线程安全的方式存储最新帧。`get_frame()` 首次调用时会阻塞等待第一帧到达（超时默认 30 秒），后续调用立即返回最新帧。退出方式：Ctrl+C / 关闭 viewer 窗口 / UDP 超时。
+
 ### 编程方式使用
 
 通过 `TeleopPipeline` 可以快速组装并运行整个管线：
@@ -123,10 +166,12 @@ print(f"Session recorded to: {result['record_path']}")
 ## 配置说明
 
 Teleopit 使用 Hydra 管理配置，结构如下：
-- `default.yaml`: 顶层配置文件，组合了机器人、控制器和输入源。
+- `default.yaml`: 离线仿真顶层配置文件，组合了机器人、控制器和输入源。
+- `online.yaml`: 实时 online sim2sim 顶层配置（`realtime: true`, `num_steps: 0`）。
 - `robot/g1.yaml`: 定义机器人参数（XML 路径、PD 增益、动作维度、默认姿态等）。
 - `controller/rl_policy.yaml`: 定义控制器参数（ONNX 模型路径、动作缩放等）。
-- `input/bvh.yaml`: 定义输入源参数（BVH 文件路径、重定向格式等）。
+- `input/bvh.yaml`: 定义离线 BVH 输入源参数（BVH 文件路径、重定向格式等）。
+- `input/udp_bvh.yaml`: 定义 UDP 实时 BVH 输入源参数（参考 BVH、UDP 端口、超时等）。
 
 关键配置字段示例：
 - `num_actions`: 关节动作维度（G1 为 29）。
@@ -137,20 +182,22 @@ Teleopit 使用 Hydra 管理配置，结构如下：
 
 ```text
 Teleopit/
-├── scripts/             # 入口脚本
-│   └── run_sim.py       # 仿真运行示例
-├── teleopit/            # 核心源码
-│   ├── bus/             # 消息总线 (InProcessBus)
-│   ├── configs/         # Hydra YAML 配置文件
-│   ├── controllers/     # 控制器实现 (RLPolicy, ObservationBuilder)
-│   ├── inputs/          # 输入设备支持 (BVHProvider, VRInputStub)
-│   ├── interfaces.py    # 核心抽象接口定义 (Protocol)
-│   ├── pipeline.py      # 管线封装 (TeleopPipeline)
-│   ├── recording/       # 数据记录模块 (HDF5Recorder)
-│   ├── retargeting/     # 运动重定向 (GMR 集成)
-│   ├── robots/          # 机器人物理抽象 (MuJoCoRobot)
-│   └── sim/             # 仿真控制循环 (SimulationLoop)
-└── tests/               # 单元测试与集成测试
+├── scripts/                 # 入口脚本
+│   ├── run_sim.py           # 离线 BVH 仿真
+│   ├── run_online_sim.py    # 实时 UDP 在线仿真
+│   └── send_bvh_udp.py     # UDP BVH 测试发送工具
+├── teleopit/                # 核心源码
+│   ├── bus/                 # 消息总线 (InProcessBus)
+│   ├── configs/             # Hydra YAML 配置文件
+│   ├── controllers/         # 控制器实现 (RLPolicy, ObservationBuilder)
+│   ├── inputs/              # 输入设备支持 (BVHProvider, UDPBVHProvider, VRInputStub)
+│   ├── interfaces.py        # 核心抽象接口定义 (Protocol)
+│   ├── pipeline.py          # 管线封装 (TeleopPipeline)
+│   ├── recording/           # 数据记录模块 (HDF5Recorder)
+│   ├── retargeting/         # 运动重定向 (GMR 集成)
+│   ├── robots/              # 机器人物理抽象 (MuJoCoRobot)
+│   └── sim/                 # 仿真控制循环 (SimulationLoop)
+└── tests/                   # 单元测试与集成测试
 ```
 
 ## 扩展指南

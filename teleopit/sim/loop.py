@@ -280,6 +280,7 @@ class SimulationLoop:
 
         self._last_action: Float32Array = np.zeros((self._num_actions,), dtype=np.float32)
         self._last_retarget_qpos: Float64Array | None = None
+        self._realtime: bool = bool(self._try_get_cfg("realtime") or False)
 
         # Resolve viewer set (support legacy viewer=bool kwarg)
         if viewers is not None:
@@ -365,8 +366,10 @@ class SimulationLoop:
 
         steps_done = 0
         has_viewers = self._has_any_viewer()
+        needs_pacing = has_viewers or self._realtime
         policy_dt = 1.0 / self.policy_hz
-        wall_start = time.monotonic() if has_viewers else 0.0
+        wall_start = time.monotonic() if needs_pacing else 0.0
+        max_steps = num_steps if num_steps > 0 else 2**63
 
         # Wait for subprocess viewers to signal alive (up to 10s)
         if self._sub_viewers:
@@ -383,7 +386,7 @@ class SimulationLoop:
         cached_retargeted: object = None
 
         try:
-            for _ in range(num_steps):
+            for _ in range(max_steps):
                 if has_viewers and not self._any_viewer_active():
                     break
 
@@ -457,7 +460,7 @@ class SimulationLoop:
                                 self._bvh_pos_arr[:n * 3] = pos_flat.tolist()
 
                 # Real-time pacing
-                if has_viewers:
+                if needs_pacing:
                     sim_time = (steps_done + 1) * policy_dt
                     wall_elapsed = time.monotonic() - wall_start
                     sleep_time = sim_time - wall_elapsed
@@ -467,6 +470,8 @@ class SimulationLoop:
                 self._last_action = action
                 self._last_retarget_qpos = qpos.copy()
                 steps_done += 1
+        except KeyboardInterrupt:
+            pass
         finally:
             # Shutdown all subprocess viewers
             for name, (proc, _, _, shutdown) in self._sub_viewers.items():
