@@ -69,9 +69,11 @@ class UnitreeG1Robot:
         )
         from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_ as HG_LowCmd
         from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_ as HG_LowState
+        from unitree_sdk2py.idl.unitree_hg.msg.dds_ import MotorCmd_ as HG_MotorCmd
         from unitree_sdk2py.utils.crc import CRC
 
         self._HG_LowCmd = HG_LowCmd
+        self._HG_MotorCmd = HG_MotorCmd
         self._crc = CRC()
 
         # ---- DDS initialisation ----
@@ -86,10 +88,14 @@ class UnitreeG1Robot:
         self._state_sub = ChannelSubscriber("rt/lowstate", HG_LowState)
         self._state_sub.Init(self._on_lowstate, 10)
 
-        # Pre-allocate a command message
-        self._cmd = HG_LowCmd()
-        self._cmd.mode_pr = 0  # PR mode for ankles
-        self._cmd.mode_machine = 0
+        # Pre-allocate a command message (IDL dataclasses require all fields)
+        self._cmd = HG_LowCmd(
+            mode_pr=0,
+            mode_machine=0,
+            motor_cmd=[HG_MotorCmd(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0) for _ in range(_NUM_MOTORS)],
+            reserve=[0, 0, 0, 0],
+            crc=0,
+        )
 
         # Wait briefly for first state message
         deadline = time.monotonic() + 3.0
