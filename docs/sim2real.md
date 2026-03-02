@@ -92,9 +92,9 @@ python scripts/run_sim2real.py 'real_robot.kp_real=[100,100,...]'
                     ┌──────────────────────────────────┐
                     │     遥控器 Start                  │
    [DAMPING] ──────►[PREPARATION] ──────►[STANDING]    │
-     ▲   ▲          (StandUp)      遥控器A  (就绪)      │
+     ▲   ▲          (Start)        遥控器A  (就绪)      │
      │   │                           │                  │
-     │   │ 急停(LB+RB)              默认进入            │
+     │   │ 急停(L1+R1)              默认进入            │
      │   │ (任意状态)                │                   │
      │   │                ┌─────────▼──────────┐       │
      │   ├────────────────┤   GAMEPAD (手柄)    │       │
@@ -117,7 +117,7 @@ python scripts/run_sim2real.py 'real_robot.kp_real=[100,100,...]'
 | 模式 | 说明 |
 |------|------|
 | **DAMPING** | 安全阻尼模式（所有电机 kp=0, kd=8）。初始状态，急停后进入此模式 |
-| **PREPARATION** | StandUp 站立准备。悬吊状态下使用，等待机器人站稳 |
+| **PREPARATION** | Start 启动运动控制器。悬吊状态下使用，等待机器人站稳 |
 | **STANDING** | 就绪状态，自动进入手柄模式 |
 | **GAMEPAD** | 手柄遥控。使用遥控器摇杆控制行走和转向 |
 | **MOCAP** | 动捕遥操作。接收 UDP BVH 数据，通过 RL 策略控制关节 |
@@ -126,11 +126,11 @@ python scripts/run_sim2real.py 'real_robot.kp_real=[100,100,...]'
 
 | 按键 | 功能 |
 |------|------|
-| **Start** | DAMPING → PREPARATION（StandUp） |
+| **Start** | DAMPING → PREPARATION（启动运动控制器） |
 | **A** | PREPARATION → STANDING → GAMEPAD |
 | **Y** | GAMEPAD → MOCAP（需 UDP 信号校验通过） |
 | **X** | MOCAP → GAMEPAD（2s 平滑过渡） |
-| **LB + RB** | 急停：任意模式 → DAMPING |
+| **L1 + R1** | 急停：任意模式 → DAMPING |
 | 左摇杆 Y | 前进/后退（手柄模式） |
 | 左摇杆 X | 左右横移（手柄模式） |
 | 右摇杆 X | 左右转向（手柄模式） |

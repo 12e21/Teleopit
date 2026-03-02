@@ -171,7 +171,7 @@ python scripts/run_sim2real.py real_robot.network_interface=enp3s0
 2. 按 **A** 键 → 进入手柄模式（左摇杆行走，右摇杆转向）
 3. 按 **Y** 键 → 切换到动捕模式（需 UDP 信号校验通过）
 4. 按 **X** 键 → 切回手柄模式
-5. **LB + RB** → 急停（任意状态）
+5. **L1 + R1** → 急停（任意状态）
 
 详细文档请参见 [Sim2Real 部署指南](docs/sim2real.md)。
 

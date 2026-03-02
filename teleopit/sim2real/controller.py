@@ -175,23 +175,14 @@ class Sim2RealController:
     def _get_loco_client(self) -> Any:
         if self._loco_client is not None:
             return self._loco_client
-        try:
-            from unitree_sdk2py.g1.loco.g1_loco_client import G1LocoClient
 
-            client = G1LocoClient()
-            client.SetTimeout(self._loco_timeout)
-            client.Init()
-            self._loco_client = client
-            logger.info("LocoClient initialised")
-        except ImportError:
-            # Fallback: try generic LocoClient
-            from unitree_sdk2py.go2.sport.sport_client import SportClient
+        from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
 
-            client = SportClient()
-            client.SetTimeout(self._loco_timeout)
-            client.Init()
-            self._loco_client = client
-            logger.info("LocoClient (SportClient fallback) initialised")
+        client = LocoClient()
+        client.SetTimeout(self._loco_timeout)
+        client.Init()
+        self._loco_client = client
+        logger.info("G1 LocoClient initialised")
         return self._loco_client
 
     # ------------------------------------------------------------------
@@ -309,7 +300,7 @@ class Sim2RealController:
     # ------------------------------------------------------------------
 
     def _check_emergency_stop(self) -> bool:
-        """LB + RB pressed simultaneously → emergency stop."""
+        """L1 + R1 pressed simultaneously → emergency stop."""
         return self.remote.LB.pressed and self.remote.RB.pressed
 
     def _enter_damping(self) -> None:
@@ -351,15 +342,15 @@ class Sim2RealController:
                 self._transition_to_gamepad()
 
     def _enter_preparation(self) -> None:
-        """StandUp via LocoClient."""
+        """Start locomotion via G1 LocoClient.Start() (FSM ID 200)."""
         try:
-            client = self._get_loco_client()
             self.robot.enable_high_level()
             time.sleep(0.5)
-            client.StandUp()
+            client = self._get_loco_client()
+            client.Start()
             self.mode = RobotMode.PREPARATION
         except Exception as exc:
-            logger.error("StandUp failed: %s — staying in DAMPING", exc)
+            logger.error("Start failed: %s — staying in DAMPING", exc)
             self.mode = RobotMode.DAMPING
 
     # ------------------------------------------------------------------

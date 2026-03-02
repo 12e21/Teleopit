@@ -207,52 +207,42 @@ class UnitreeG1Robot:
     # ------------------------------------------------------------------
 
     def enable_low_level(self) -> None:
-        """Stop onboard locomotion service → switch to low-level control."""
-        try:
-            from unitree_sdk2py.go2.sport.sport_client import SportClient
+        """Stop onboard locomotion service → switch to low-level control.
 
-            client = SportClient()
+        Uses MotionSwitcherClient.ReleaseMode() to release the built-in
+        locomotion controller, allowing direct LowCmd control.
+        """
+        try:
+            from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import (
+                MotionSwitcherClient,
+            )
+
+            client = MotionSwitcherClient()
             client.SetTimeout(5.0)
             client.Init()
-            # Switching to empty name disables the built-in controller
-            client.SwitchMoveMode("")
-            logger.info("motion_switcher: switched to low-level control")
-        except Exception:
-            logger.warning(
-                "motion_switcher: SportClient unavailable, trying MotionSwitcherClient"
-            )
-            self._motion_switch_via_dds("")
+            code, _ = client.ReleaseMode()
+            logger.info("motion_switcher: ReleaseMode → low-level control (code=%s)", code)
+        except Exception as exc:
+            logger.error("motion_switcher: enable_low_level failed: %s", exc)
 
     def enable_high_level(self) -> None:
-        """Restore onboard locomotion service → switch to high-level control."""
-        try:
-            from unitree_sdk2py.go2.sport.sport_client import SportClient
+        """Restore onboard locomotion service → switch to high-level control.
 
-            client = SportClient()
+        Uses MotionSwitcherClient.SelectMode("normal") to re-enable the
+        built-in locomotion controller for LocoClient usage.
+        """
+        try:
+            from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import (
+                MotionSwitcherClient,
+            )
+
+            client = MotionSwitcherClient()
             client.SetTimeout(5.0)
             client.Init()
-            client.SwitchMoveMode("normal")
-            logger.info("motion_switcher: switched to high-level control")
-        except Exception:
-            logger.warning(
-                "motion_switcher: SportClient unavailable, trying MotionSwitcherClient"
-            )
-            self._motion_switch_via_dds("normal")
-
-    def _motion_switch_via_dds(self, mode_name: str) -> None:
-        """Fallback motion_switcher via raw DDS service call."""
-        try:
-            from unitree_sdk2py.core.channel import ChannelPublisher
-
-            # Publish a JSON-like command on the motion_switcher topic
-            import json
-
-            payload = json.dumps({"name": mode_name}).encode()
-            logger.info("motion_switcher DDS fallback: %s", mode_name)
-            # Note: exact topic/message type depends on SDK version;
-            # SportClient.SwitchMoveMode is the preferred path.
+            code, _ = client.SelectMode("normal")
+            logger.info("motion_switcher: SelectMode('normal') → high-level control (code=%s)", code)
         except Exception as exc:
-            logger.error("motion_switcher fallback failed: %s", exc)
+            logger.error("motion_switcher: enable_high_level failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Lifecycle
