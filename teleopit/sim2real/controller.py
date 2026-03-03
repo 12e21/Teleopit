@@ -4,12 +4,13 @@ Supports two operating modes for a physical Unitree G1:
 - **Gamepad**: LocoClient sends velocity commands (robot stays in "ai" mode)
 - **Mocap**: Debug mode + direct LowCmd joint control via RL policy
 
-Design based on unitreerobotics/xr_teleoperate patterns:
-- LocoClient with fire-and-forget timeout (0.0001s) for velocity commands
-- No SetFsmId() call -- robot in "ai" mode is already walk-ready
-- Debug mode via MotionSwitcher.Enter_Debug_Mode() for low-level control
-- 250Hz continuous LowCmd publishing thread (robot needs constant commands)
-- Lock all joints to current position when entering debug mode
+Prerequisites:
+    User must manually activate ai_sport walking via remote controller
+    BEFORE starting this script (boot → damping → locked standing → walking).
+
+State machine:
+    IDLE ──Start──▶ GAMEPAD ──Y──▶ MOCAP ──X──▶ DAMPING
+    Any ──L1+R1──▶ DAMPING ──Start──▶ GAMEPAD (if ai_sport active)
 """
 
 from __future__ import annotations
@@ -26,7 +27,6 @@ from numpy.typing import NDArray
 from teleopit.controllers.observation import TWIST2ObservationBuilder
 from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.inputs.udp_bvh_provider import UDPBVHInputProvider
-from teleopit.interfaces import RobotState
 from teleopit.retargeting.core import RetargetingModule, extract_mimic_obs
 from teleopit.sim2real.remote import UnitreeRemote
 from teleopit.sim2real.unitree_g1 import UnitreeG1Robot
@@ -47,11 +47,10 @@ def _cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
 
 
 class RobotMode(Enum):
-    DAMPING = "damping"
-    PREPARATION = "preparation"
-    STANDING = "standing"
-    GAMEPAD = "gamepad"
-    MOCAP = "mocap"
+    IDLE = "idle"          # Script waiting, robot controlled by remote
+    GAMEPAD = "gamepad"    # LocoClient active, joystick walking
+    MOCAP = "mocap"        # Debug mode, RL policy, 250Hz LowCmd
+    DAMPING = "damping"    # Emergency stop / recovery
 
 
 class Sim2RealController:
@@ -60,15 +59,13 @@ class Sim2RealController:
     Gamepad mode: robot stays in "ai" mode, LocoClient sends velocity commands.
     Mocap mode: enter debug mode, direct LowCmd via RL policy at 250Hz.
 
-    Based on xr_teleoperate:
-    - LocoClient.SetTimeout(0.0001) -- fire-and-forget, no blocking
-    - No SetFsmId() needed -- "ai" mode is already walk-ready
-    - Debug mode via CheckMode/ReleaseMode loop for low-level control
+    User must activate ai_sport via remote before starting this script.
+    The script does NOT attempt to activate ai_sport via SDK.
     """
 
     def __init__(self, cfg: Any) -> None:
         self.cfg = cfg
-        self.mode = RobotMode.DAMPING
+        self.mode = RobotMode.IDLE
 
         self.policy_hz: float = float(_cfg_get(cfg, "policy_hz", 50.0))
         self._project_root = Path(__file__).resolve().parent.parent.parent
@@ -78,7 +75,7 @@ class Sim2RealController:
         self.robot = UnitreeG1Robot(real_cfg)
         self.remote = UnitreeRemote()
 
-        # ---- LocoClient (created in _enter_preparation) ----
+        # ---- LocoClient (created in _enter_gamepad) ----
         self._loco_client: Any = None
 
         # ---- Gamepad speed limits ----
@@ -163,11 +160,11 @@ class Sim2RealController:
         self._check_frames: int = int(_cfg_get(mocap_sw, "check_frames", 10))
         self._max_pos_value: float = float(_cfg_get(mocap_sw, "max_position_value", 5.0))
 
-        # ---- Startup: ensure "ai" mode is active ----
-        self._ensure_ai_mode()
+        # ---- Startup: check mode and warn ----
+        self._check_startup_mode()
 
         logger.info(
-            "Sim2RealController ready | policy_hz=%.0f | "
+            "Sim2RealController ready | mode=IDLE | policy_hz=%.0f | "
             "max_vx=%.1f max_vy=%.1f max_vyaw=%.1f",
             self.policy_hz, self._max_vx, self._max_vy, self._max_vyaw,
         )
@@ -176,47 +173,31 @@ class Sim2RealController:
     # Startup
     # ------------------------------------------------------------------
 
-    def _ensure_ai_mode(self) -> None:
-        """Ensure robot is in 'ai' mode at startup.
-
-        If the robot was left in debug/released state from a previous run,
-        restore 'ai' mode and wait for the robot to initialize (stand up).
-        """
-        logger.info("=== Startup: checking robot mode ===")
+    def _check_startup_mode(self) -> None:
+        """Check robot mode at startup and log status (no SDK mode changes)."""
         result = self.robot.check_mode()
         if result is None:
-            logger.warning("Could not query motion mode")
+            logger.warning(
+                "Could not query motion mode -- MotionSwitcher may not be available"
+            )
             return
 
         mode_name = result.get("name", "") if isinstance(result, dict) else str(result)
-        logger.info("Current motion mode: '%s'", mode_name)
-
         if mode_name:
-            logger.info("Robot already in '%s' mode -- ready", mode_name)
-            return
-
-        # No active mode -- restore "ai" mode
-        logger.warning("No active mode -- restoring 'ai' mode...")
-        self.robot.exit_debug_mode()
-        logger.info("Waiting 5s for robot to initialize and stand up...")
-        time.sleep(5.0)
-
-        # Verify
-        result = self.robot.check_mode()
-        if result is not None:
-            mode_name = result.get("name", "") if isinstance(result, dict) else str(result)
-            logger.info("Mode after restore: '%s'", mode_name)
+            logger.info("Startup: robot in '%s' mode -- ready", mode_name)
+        else:
+            logger.warning(
+                "Startup: no active mode detected. "
+                "Please activate ai_sport via remote controller "
+                "(L1+A → L1+UP) before pressing Start."
+            )
 
     # ------------------------------------------------------------------
     # LocoClient management (fire-and-forget, matching xr_teleoperate)
     # ------------------------------------------------------------------
 
     def _create_loco_client(self) -> Any:
-        """Create LocoClient with fire-and-forget timeout.
-
-        xr_teleoperate uses SetTimeout(0.0001) -- commands are sent but
-        responses are not waited for. This prevents blocking the control loop.
-        """
+        """Create LocoClient with fire-and-forget timeout."""
         from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
 
         client = LocoClient()
@@ -231,7 +212,9 @@ class Sim2RealController:
 
     def run(self) -> None:
         """Main control loop at policy_hz."""
-        logger.info("Starting control loop -- press Start to begin")
+        logger.info(
+            "Control loop started | mode=IDLE | press Start to enter GAMEPAD"
+        )
         dt = 1.0 / self.policy_hz
 
         try:
@@ -272,11 +255,7 @@ class Sim2RealController:
     # ------------------------------------------------------------------
 
     def _gamepad_step(self) -> None:
-        """Gamepad mode: read joystick -> LocoClient.Move(vx, vy, vyaw).
-
-        LocoClient uses fire-and-forget timeout so Move() never blocks.
-        The robot's "ai" mode handles the actual locomotion.
-        """
+        """Gamepad mode: read joystick -> LocoClient.Move(vx, vy, vyaw)."""
         if self._loco_client is None:
             return
 
@@ -290,11 +269,7 @@ class Sim2RealController:
             pass  # Fire-and-forget -- errors are expected (timeout)
 
     def _mocap_step(self) -> None:
-        """Mocap mode: UDP BVH -> retarget -> policy -> update LowCmd targets.
-
-        The 250Hz publish thread in UnitreeG1Robot handles actual publishing.
-        This method only updates the position targets at policy_hz (50Hz).
-        """
+        """Mocap mode: UDP BVH -> retarget -> policy -> update LowCmd targets."""
         if not self.udp_provider.is_available():
             logger.warning("UDP provider unavailable -- entering damping")
             self._enter_damping()
@@ -340,108 +315,61 @@ class Sim2RealController:
         """L1 + R1 pressed simultaneously -> emergency stop."""
         return self.remote.LB.pressed and self.remote.RB.pressed
 
-    def _enter_damping(self) -> None:
-        """Enter damping mode from any state.
-
-        From GAMEPAD: LocoClient.Damp() + destroy LocoClient
-        From MOCAP: set_damping() via LowCmd + exit debug mode
-        """
-        if self.mode == RobotMode.MOCAP:
-            # In debug mode with LowCmd publisher -- send damping
-            logger.info("DAMPING: sending LowCmd damping (from MOCAP)...")
-            self.robot.set_damping()
-            time.sleep(0.5)
-            # Restore "ai" mode
-            logger.info("DAMPING: restoring 'ai' mode...")
-            self.robot.exit_debug_mode()
-            time.sleep(3.0)
-        elif self._loco_client is not None:
-            # In high-level mode -- use LocoClient to damp
-            logger.info("DAMPING: LocoClient.Damp() (from GAMEPAD)...")
-            try:
-                self._loco_client.Damp()
-            except Exception:
-                pass
-
-        self._loco_client = None
-        self.mode = RobotMode.DAMPING
-        logger.info("Mode -> DAMPING")
-
     def _handle_transitions(self) -> None:
         """Handle remote-triggered mode transitions."""
-        if self.mode == RobotMode.DAMPING:
+        if self.mode == RobotMode.IDLE:
             if self.remote.start.on_pressed:
-                logger.info("Start pressed -> PREPARATION")
-                self._enter_preparation()
-
-        elif self.mode == RobotMode.PREPARATION:
-            if self.remote.A.on_pressed:
-                logger.info("A pressed -> GAMEPAD")
-                self.mode = RobotMode.STANDING
-
-        elif self.mode == RobotMode.STANDING:
-            self.mode = RobotMode.GAMEPAD
-            logger.info("Mode -> GAMEPAD (LocoClient active, joystick controls walking)")
+                logger.info("Start pressed (from IDLE)")
+                self._enter_gamepad()
 
         elif self.mode == RobotMode.GAMEPAD:
             if self.remote.Y.on_pressed:
                 if self._can_switch_to_mocap():
-                    logger.info("Y pressed -> MOCAP")
+                    logger.info("Y pressed -> entering MOCAP")
                     self._transition_to_mocap()
                 else:
                     logger.warning("Cannot switch to MOCAP -- UDP check failed")
 
         elif self.mode == RobotMode.MOCAP:
             if self.remote.X.on_pressed:
-                logger.info("X pressed -> GAMEPAD (from MOCAP)")
-                self._transition_to_gamepad()
+                logger.info("X pressed -> exiting MOCAP to DAMPING")
+                self._enter_damping()
+
+        elif self.mode == RobotMode.DAMPING:
+            if self.remote.start.on_pressed:
+                logger.info("Start pressed (from DAMPING)")
+                self._recover_from_damping()
 
     # ------------------------------------------------------------------
-    # PREPARATION
+    # IDLE -> GAMEPAD
     # ------------------------------------------------------------------
 
-    def _enter_preparation(self) -> None:
-        """DAMPING -> PREPARATION: ensure 'ai' mode, create LocoClient.
-
-        Based on xr_teleoperate: no SetFsmId() needed. The robot in "ai"
-        mode is already walk-ready. Just create LocoClient and start
-        sending Move commands.
-        """
-        logger.info("=== PREPARATION ===")
-
-        # Ensure "ai" mode is active
+    def _enter_gamepad(self) -> None:
+        """Enter gamepad mode: verify ai_sport is active, create LocoClient."""
         result = self.robot.check_mode()
         mode_name = ""
         if result is not None:
             mode_name = result.get("name", "") if isinstance(result, dict) else str(result)
-        logger.info("Current mode: '%s'", mode_name)
 
         if not mode_name:
-            logger.info("No active mode -- restoring 'ai' mode...")
-            self.robot.exit_debug_mode()
-            logger.info("Waiting 5s for robot to stand up...")
-            time.sleep(5.0)
+            logger.warning(
+                "No active mode -- cannot enter GAMEPAD. "
+                "Please activate ai_sport via remote controller first."
+            )
+            return
 
-            result = self.robot.check_mode()
-            if result is not None:
-                mode_name = result.get("name", "") if isinstance(result, dict) else str(result)
-            if not mode_name:
-                logger.error("Failed to restore 'ai' mode -- stay in DAMPING")
-                return
-
-        # Create LocoClient (fire-and-forget, matching xr_teleoperate)
-        logger.info("Creating LocoClient...")
+        logger.info("Mode '%s' active -- creating LocoClient...", mode_name)
         try:
             self._loco_client = self._create_loco_client()
         except Exception as exc:
             logger.error("Failed to create LocoClient: %s", exc)
             return
 
-        self.mode = RobotMode.PREPARATION
-        logger.info("=== PREPARATION complete -- press A to enter GAMEPAD ===")
+        self.mode = RobotMode.GAMEPAD
+        logger.info("Mode -> GAMEPAD (LocoClient active, joystick controls walking)")
 
     # ------------------------------------------------------------------
-    # Mode switching: gamepad <-> mocap
+    # GAMEPAD -> MOCAP
     # ------------------------------------------------------------------
 
     def _can_switch_to_mocap(self) -> bool:
@@ -487,11 +415,11 @@ class Sim2RealController:
         return False
 
     def _transition_to_mocap(self) -> None:
-        """Switch from gamepad -> mocap mode.
+        """Switch from GAMEPAD -> MOCAP.
 
         1. Stop walking via LocoClient
         2. Enter debug mode (ReleaseMode loop)
-        3. Create LowCmd publisher + lock all joints
+        3. Lock all joints (creates LowCmd publisher + 250Hz thread)
         4. Read current state as initial retarget reference
         """
         # Stop walking
@@ -505,7 +433,16 @@ class Sim2RealController:
 
         # Enter debug mode (release "ai" -> low-level control)
         logger.info("Entering debug mode for low-level control...")
-        self.robot.enter_debug_mode()
+        ok = self.robot.enter_debug_mode()
+        if not ok:
+            logger.error("Failed to enter debug mode -- staying in GAMEPAD")
+            # Recreate LocoClient since we destroyed it
+            try:
+                self._loco_client = self._create_loco_client()
+            except Exception:
+                logger.error("Failed to recreate LocoClient -- entering IDLE")
+                self.mode = RobotMode.IDLE
+            return
         time.sleep(0.5)
 
         # Lock all joints to current position (prevent collapse)
@@ -527,45 +464,54 @@ class Sim2RealController:
         self.mode = RobotMode.MOCAP
         logger.info("Mode -> MOCAP (debug mode, 250Hz LowCmd publishing)")
 
-    def _transition_to_gamepad(self) -> None:
-        """Switch from mocap -> gamepad mode.
+    # ------------------------------------------------------------------
+    # Emergency stop / damping
+    # ------------------------------------------------------------------
 
-        1. Smooth interpolation to default standing pose (2s)
-        2. Exit debug mode (SelectMode("ai"))
-        3. Recreate LocoClient
-        """
-        logger.info("Smooth transition to default pose (2s)...")
-        self._smooth_to_default_pose(duration=2.0)
+    def _enter_damping(self) -> None:
+        """Enter damping mode from any state."""
+        if self.mode == RobotMode.MOCAP:
+            logger.info("DAMPING: sending LowCmd damping (from MOCAP)...")
+            self.robot.set_damping()
+            time.sleep(0.5)
+            # Exit debug mode so user can re-activate ai_sport via remote
+            logger.info("DAMPING: exiting debug mode...")
+            self.robot.exit_debug_mode()
+        elif self._loco_client is not None:
+            logger.info("DAMPING: LocoClient.Damp() (from GAMEPAD)...")
+            try:
+                self._loco_client.Damp()
+            except Exception:
+                pass
 
-        # Exit debug mode -> restore "ai" locomotion
-        logger.info("Exiting debug mode -> restoring 'ai' mode...")
-        self.robot.exit_debug_mode()
-        time.sleep(3.0)
+        self._loco_client = None
+        self.mode = RobotMode.DAMPING
+        logger.info(
+            "Mode -> DAMPING (restart robot and re-activate ai_sport "
+            "via remote, then press Start)"
+        )
 
-        # Recreate LocoClient
-        logger.info("Recreating LocoClient...")
+    def _recover_from_damping(self) -> None:
+        """Attempt recovery from DAMPING: check if ai_sport is active."""
+        result = self.robot.check_mode()
+        mode_name = ""
+        if result is not None:
+            mode_name = result.get("name", "") if isinstance(result, dict) else str(result)
+
+        if not mode_name:
+            logger.warning(
+                "No active mode -- please re-activate ai_sport via "
+                "remote controller, then press Start again."
+            )
+            return
+
+        logger.info("ai_sport active (mode='%s') -- entering GAMEPAD...", mode_name)
         try:
             self._loco_client = self._create_loco_client()
+            self.mode = RobotMode.GAMEPAD
+            logger.info("Mode -> GAMEPAD (recovered from DAMPING)")
         except Exception as exc:
-            logger.error("Failed to recreate LocoClient: %s", exc)
-            self._loco_client = None
-
-        self.mode = RobotMode.GAMEPAD
-        logger.info("Mode -> GAMEPAD (LocoClient restored)")
-
-    def _smooth_to_default_pose(self, duration: float = 2.0) -> None:
-        """Linear interpolation from current joint positions to default standing pose."""
-        state = self.robot.get_state()
-        start_pos = state.qpos.copy().astype(np.float32)
-        target_pos = self.default_angles.copy()
-        steps = max(int(duration * self.policy_hz), 1)
-        dt = 1.0 / self.policy_hz
-
-        for i in range(steps):
-            alpha = (i + 1) / steps
-            interp = start_pos * (1.0 - alpha) + target_pos * alpha
-            self.robot.send_positions(interp)
-            time.sleep(dt)
+            logger.error("Failed to create LocoClient: %s", exc)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -609,19 +555,14 @@ class Sim2RealController:
     # ------------------------------------------------------------------
 
     def shutdown(self) -> None:
-        """Clean shutdown: restore 'ai' mode so robot is ready for next run."""
+        """Clean shutdown."""
         logger.info("Shutting down Sim2RealController")
-        # If in mocap/debug mode, restore "ai" mode
         if self.mode == RobotMode.MOCAP:
             try:
                 self.robot.set_damping()
                 time.sleep(0.5)
             except Exception:
                 pass
-        try:
-            self.robot.exit_debug_mode()
-        except Exception:
-            pass
         try:
             self.udp_provider.close()
         except Exception:
