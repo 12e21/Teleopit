@@ -129,6 +129,29 @@ class OnPolicyRunnerMimic:
         self.tot_timesteps = 0
         self.tot_time = 0
         self.current_learning_iteration = 0
+
+        # Initialize wandb if configured
+        self._wandb_enabled = False
+        logger_type = self.cfg.get("logger", "wandb") if isinstance(self.cfg, dict) else getattr(self.cfg, "logger", "wandb")
+        if logger_type == "wandb" and log_dir is not None:
+            wandb_project = self.cfg.get("wandb_project", "teleopit_isaaclab") if isinstance(self.cfg, dict) else getattr(self.cfg, "wandb_project", "teleopit_isaaclab")
+            experiment_name = self.cfg.get("experiment_name", "g1_mimic") if isinstance(self.cfg, dict) else getattr(self.cfg, "experiment_name", "g1_mimic")
+            try:
+                wandb.init(
+                    project=wandb_project,
+                    name=os.path.basename(log_dir),
+                    group=experiment_name,
+                    dir=log_dir,
+                    config={
+                        "runner": dict(self.cfg) if isinstance(self.cfg, dict) else self.cfg,
+                        "algorithm": dict(self.alg_cfg) if isinstance(self.alg_cfg, dict) else self.alg_cfg,
+                        "policy": dict(self.policy_cfg) if isinstance(self.policy_cfg, dict) else self.policy_cfg,
+                    },
+                )
+                self._wandb_enabled = True
+                print(f"[wandb] Initialized: project={wandb_project}, run={os.path.basename(log_dir)}")
+            except Exception as e:
+                print(f"[wandb] Failed to initialize: {e}. Logging disabled.")
         
 
     def learn_RL(self, num_learning_iterations, init_at_random_ep_len=False):
@@ -316,9 +339,12 @@ class OnPolicyRunnerMimic:
             # wandb_dict['Train/mean_episode_length/time', statistics.mean(locs['lenbuffer']), self.tot_time)
 
         try:
-            wandb.log(wandb_dict, step=locs['it'])
+            if self._wandb_enabled:
+                # Convert tensors/numpy to Python scalars for thread-safe wandb logging
+                safe_dict = {k: (v.item() if hasattr(v, 'item') else float(v)) for k, v in wandb_dict.items()}
+                wandb.log(safe_dict, step=locs['it'])
         except Exception:
-            pass  # wandb not initialized, skip logging
+            pass
 
         str = f" \033[1m Learning iteration {locs['it']}/{self.current_learning_iteration + locs['num_learning_iterations']} \033[0m "
 
@@ -385,15 +411,15 @@ class OnPolicyRunnerMimic:
             }
         torch.save(state_dict, path)
         
-        # Save to wandb only if enabled in config
-        if getattr(self.cfg, 'save_to_wandb', True):  # Default to True for backward compatibility
+        # Save to wandb only if enabled
+        if self._wandb_enabled:
             try:
                 wandb.save(path, base_path=os.path.dirname(path))
                 print(f"Saved model to {path} as well as to wandb")
             except Exception:
-                print(f"Saved model to {path} (wandb not initialized, skipped wandb upload)")
+                print(f"Saved model to {path} (wandb upload failed)")
         else:
-            print(f"Saved model to {path} (wandb saving disabled)")
+            print(f"Saved model to {path}")
      
 
     def load(self, path, load_optimizer=True):

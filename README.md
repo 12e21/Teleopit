@@ -350,10 +350,10 @@ python train_mimic/scripts/train.py \
 
 # 3. 导出 ONNX 模型
 python train_mimic/scripts/save_onnx.py \
-    --checkpoint logs/rsl_rl/g1_mimic/<timestamp>/model_30000.pt \
+    --checkpoint logs/rsl_rl/g1_mimic/{run_name}/model_30000.pt \
     --output policy.onnx
 # 4. 推理
-python scripts/run_sim.py --policy policy.onnx
+python scripts/run_sim.py controller.policy_path=policy.onnx
 ```
 
 详细文档：

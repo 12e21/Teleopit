@@ -5,6 +5,7 @@ from __future__ import annotations
 # pyright: reportMissingImports=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownParameterType=false, reportAny=false, reportExplicitAny=false, reportUnusedImport=false, reportUnusedCallResult=false, reportUnannotatedClassAttribute=false, reportUntypedClassDecorator=false, reportUntypedBaseClass=false, reportArgumentType=false, reportMissingParameterType=false
 
 import argparse
+import asyncio
 import importlib
 import os
 import sys
@@ -12,11 +13,22 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from typing import Any
 
+# Save original asyncio.run BEFORE Isaac Sim patches it.
+# Isaac Sim's omni.kit.async_engine monkey-patches asyncio.run() globally,
+# which conflicts with wandb's background AsyncioManager thread and causes a segfault.
+# We restore the original after SimulationApp creation so that wandb (and other libraries)
+# use the standard asyncio.run() in their threads.
+_original_asyncio_run = asyncio.run
+
 # Bootstrap Omniverse Kit runtime — MUST instantiate SimulationApp before any omni / Isaac Lab imports
 os.environ.setdefault("OMNI_KIT_ACCEPT_EULA", "YES")
 from isaacsim import SimulationApp
 
 simulation_app = SimulationApp({"headless": "--headless" in sys.argv})
+
+# Restore original asyncio.run — Isaac Sim uses its own internal event loop for
+# simulation and does not need the global asyncio.run to be patched.
+asyncio.run = _original_asyncio_run
 
 import gymnasium as gym  # noqa: E402
 import torch  # noqa: E402

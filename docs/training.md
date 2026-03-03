@@ -91,7 +91,7 @@ python train_mimic/scripts/train.py \
 - `--wandb_project`：可选，启用 wandb 日志记录
 - `--seed 42`：可选，固定随机种子
 
-Checkpoint 保存在 `logs/rsl_rl/g1_mimic/<timestamp>/` 目录下。
+Checkpoint 保存在 `logs/rsl_rl/g1_mimic/{run_name}/` 目录下。
 
 ### Phase 2: 导出 ONNX 模型
 
@@ -99,7 +99,7 @@ Checkpoint 保存在 `logs/rsl_rl/g1_mimic/<timestamp>/` 目录下。
 
 ```bash
 python train_mimic/scripts/save_onnx.py \
-    --checkpoint logs/rsl_rl/g1_mimic/<timestamp>/model_30000.pt \
+    --checkpoint logs/rsl_rl/g1_mimic/{run_name}/model_30000.pt \
     --output policy.onnx
 ```
 
@@ -108,7 +108,7 @@ python train_mimic/scripts/save_onnx.py \
 使用导出的 ONNX 模型进行遥操推理（MuJoCo 仿真）：
 
 ```bash
-python scripts/run_sim.py --policy policy.onnx
+python scripts/run_sim.py controller.policy_path=policy.onnx
 ```
 
 ## 如何判断训练是否有效

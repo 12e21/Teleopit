@@ -61,8 +61,7 @@ usd_dir: .                                     # 当前目录
 使用验证脚本检查 USD 结构：
 
 ```bash
-cd train_mimic
-python scripts/verify_usd_structure.py
+python train_mimic/scripts/verify_usd_structure.py
 ```
 
 验证项目：
