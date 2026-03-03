@@ -57,6 +57,12 @@ class UDPBVHInputProvider:
 
         self._euler_order, self._channels = _parse_bvh_header(reference_bvh)
         self._format = human_format
+        # Auto-detect: hc_mocap without toe joints needs different IK config
+        self._has_toe = "LeftToeBase" in self._bone_names
+        if human_format == "hc_mocap" and not self._has_toe:
+            self.human_format = "hc_mocap_no_toe"
+        else:
+            self.human_format = human_format
 
         # Coordinate transform matrices (Y-up BVH → Z-up sim)
         self._rotation_matrix = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]])
@@ -91,6 +97,11 @@ class UDPBVHInputProvider:
             if "RightToeBase" in self._bone_names
             else None
         )
+        # Fallback to foot joints if toe joints not present
+        if toe_l_idx is None and "hc_Foot_L" in self._bone_names:
+            toe_l_idx = self._bone_names.index("hc_Foot_L")
+        if toe_r_idx is None and "hc_Foot_R" in self._bone_names:
+            toe_r_idx = self._bone_names.index("hc_Foot_R")
         if head_idx is not None and toe_l_idx is not None and toe_r_idx is not None:
             head_y = global_data[1][0, head_idx, 1]
             toe_y = min(

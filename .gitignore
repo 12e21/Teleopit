@@ -44,7 +44,7 @@ coverage.xml
 .env
 .venv
 env/
-!teleopit_train/rsl_rl/env/
+!train_mimic/rsl_rl/env/
 venv/
 ENV/
 env.bak/
@@ -66,8 +66,8 @@ outputs/
 logs/
 *.log
 # Training - downloaded reference assets (re-downloadable)
-teleopit_train/assets/g1/usd/configuration/
-teleopit_train/assets/g1/usd/meshes/
+train_mimic/assets/g1/usd/configuration/
+train_mimic/assets/g1/usd/meshes/
 
 # OS
 .DS_Store

@@ -112,10 +112,14 @@ class TeleopPipeline:
         self.bus = InProcessBus()
         self.input_provider = self._build_input_provider(input_cfg)
 
-        human_format = _cfg_get(input_cfg, "human_format", None)
-        if not human_format or str(human_format) == "null":
-            bvh_format = str(_cfg_get(input_cfg, "bvh_format", "lafan1"))
-            human_format = f"bvh_{bvh_format}"
+        # Use provider's human_format (may be auto-adjusted, e.g. hc_mocap_no_toe)
+        if hasattr(self.input_provider, "human_format"):
+            human_format = f"bvh_{self.input_provider.human_format}"
+        else:
+            human_format = _cfg_get(input_cfg, "human_format", None)
+            if not human_format or str(human_format) == "null":
+                bvh_format = str(_cfg_get(input_cfg, "bvh_format", "lafan1"))
+                human_format = f"bvh_{bvh_format}"
 
         self.retargeter = RetargetingModule(
             robot_name=str(_cfg_get(input_cfg, "robot_name", "unitree_g1")),

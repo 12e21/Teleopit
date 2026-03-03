@@ -19,7 +19,7 @@
 
 ```bash
 conda activate teleopit_isaaclab
-OMNI_KIT_ACCEPT_EULA=YES python teleopit_train/scripts/convert_urdf_isaaclab.py --headless
+OMNI_KIT_ACCEPT_EULA=YES python train_mimic/scripts/convert_urdf_isaaclab.py --headless
 ```
 
 关键配置：
@@ -32,7 +32,7 @@ OMNI_KIT_ACCEPT_EULA=YES python teleopit_train/scripts/convert_urdf_isaaclab.py 
 ```bash
 # 运行 100 轮测试，确认无挂起
 timeout 600 bash -c 'eval "$(conda shell.bash hook)" && conda activate teleopit_isaaclab && \
-OMNI_KIT_ACCEPT_EULA=YES python teleopit_train/scripts/train.py \
+OMNI_KIT_ACCEPT_EULA=YES python train_mimic/scripts/train.py \
   --task Isaac-G1-Mimic-v0 --num_envs 4 --max_iterations 100 --headless --seed 42 2>&1'
 ```
 

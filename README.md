@@ -145,6 +145,39 @@ python scripts/run_online_sim.py num_steps=5000
 
 > **工作原理**：`UDPBVHInputProvider` 从一个参考 BVH 文件（`reference_bvh`）解析骨骼层级结构（骨骼名、父子关系、偏移量、Euler 旋转顺序），然后在后台线程中通过 `recvfrom` 接收 UDP 数据包，逐帧完成 Euler→四元数→FK→坐标变换，并以线程安全的方式存储最新帧。`get_frame()` 首次调用时会阻塞等待第一帧到达（超时默认 30 秒），后续调用立即返回最新帧。退出方式：Ctrl+C / 关闭 viewer 窗口 / UDP 超时。
 
+### 离线渲染视频
+
+使用 `render_sim.py` 对 BVH 文件进行离线渲染，生成三个对比视频：BVH 原始骨架、GMR 运动学重定向、RL 策略物理仿真（sim2sim）。适用于无显示器的服务器环境（通过 EGL 离屏渲染）。
+
+```bash
+# 渲染单个 BVH 文件（输出到 outputs/ 目录）
+MUJOCO_GL=egl python scripts/render_sim.py --bvh data/hc_mocap/wander.bvh --format hc_mocap
+
+# 限制渲染时长（秒）
+MUJOCO_GL=egl python scripts/render_sim.py --bvh data/hc_mocap/wander.bvh --format hc_mocap --max_seconds 10
+
+# lafan1 格式（默认）
+MUJOCO_GL=egl python scripts/render_sim.py --bvh data/lafan1/dance1_subject2.bvh
+
+# 自定义分辨率
+MUJOCO_GL=egl python scripts/render_sim.py --bvh data/hc_mocap/wander.bvh --format hc_mocap --width 1280 --height 720
+
+# 批量渲染 data/hc_mocap 下所有动作文件
+for f in data/hc_mocap/motion-*.bvh; do
+    MUJOCO_GL=egl python scripts/render_sim.py --bvh "$f" --format hc_mocap
+done
+```
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--bvh` | (必选) | BVH 文件路径 |
+| `--format` | `lafan1` | BVH 格式：`lafan1` 或 `hc_mocap` |
+| `--max_seconds` | `0` | 最大渲染时长（秒），0 = 渲染完整 BVH |
+| `--width` | `640` | 视频宽度（像素） |
+| `--height` | `360` | 视频高度（像素） |
+
+输出文件保存在 `outputs/` 目录下，命名规则：`{bvh文件名}_bvh.mp4`、`{bvh文件名}_retarget.mp4`、`{bvh文件名}_sim2sim.mp4`。
+
 ### Sim2Real 实物部署
 
 Teleopit 支持通过 Unitree SDK2 直接控制实物 G1 机器人，提供手柄遥控和动捕遥操作两种模式。
@@ -219,6 +252,7 @@ Teleopit/
 │   ├── run_sim.py           # 离线 BVH 仿真
 │   ├── run_online_sim.py    # 实时 UDP 在线仿真
 │   ├── run_sim2real.py      # Sim2Real 实物部署（手柄/动捕双模式）
+│   ├── render_sim.py       # 离线渲染 BVH/重定向/sim2sim 对比视频
 │   └── send_bvh_udp.py     # UDP BVH 测试发送工具
 ├── teleopit/                # 核心源码
 │   ├── bus/                 # 消息总线 (InProcessBus)
@@ -269,7 +303,7 @@ pytest tests/ -v
 
 ## 训练
 
-Teleopit 集成了 TWIST2 的训练代码，作为独立的 `teleopit_train` 包，基于 Isaac Lab 进行 GPU 并行仿真训练。
+Teleopit 集成了 TWIST2 的训练代码，作为独立的 `train_mimic` 包，基于 Isaac Lab 进行 GPU 并行仿真训练。
 
 快速开始：
 
@@ -277,14 +311,14 @@ Teleopit 集成了 TWIST2 的训练代码，作为独立的 `teleopit_train` 包
 # 1. 环境搭建（详见 docs/training.md）
 conda activate teleopit_isaaclab
 # 2. 训练 teacher 策略
-python teleopit_train/scripts/train.py \
+python train_mimic/scripts/train.py \
     --task Isaac-G1-Mimic-v0 \
     --num_envs 4096 \
     --max_iterations 30000 \
     --headless
 
 # 3. 导出 ONNX 模型
-python teleopit_train/scripts/save_onnx.py \
+python train_mimic/scripts/save_onnx.py \
     --checkpoint logs/rsl_rl/g1_mimic/<timestamp>/model_30000.pt \
     --output policy.onnx
 # 4. 推理
