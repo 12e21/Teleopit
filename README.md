@@ -37,6 +37,7 @@ Teleopit 采用模块化架构，核心数据流如下所示：
 - **TWIST2 兼容观测**: 精确复刻 1402D (127×11 + 35) 观测构建逻辑，直接支持 TWIST2 预训练模型。
 - **ONNX RL 策略推理**: 采用 `onnxruntime` 进行推理，不依赖完整的 PyTorch 环境即可运行。
 - **MuJoCo 仿真与 PD 控制**: 集成 MuJoCo 物理引擎，支持 1000Hz PD 控制与 50Hz Policy 推理频率。
+- **Sim2Real 实物部署**: 通过 Unitree SDK2 控制实物 G1 机器人，支持手柄遥控和动捕遥操作双模式，含状态机安全管理和急停功能。
 - **HDF5 数据记录**: 支持高效的数据录制，采用分块存储与 gzip 压缩。
 - **Hydra 配置系统**: 全面的配置管理，通过 YAML 文件轻松切换机器人和控制器参数。
 - **零拷贝消息总线**: 进程内通信采用对象引用传递，确保高性能数据传输。
@@ -144,6 +145,37 @@ python scripts/run_online_sim.py num_steps=5000
 
 > **工作原理**：`UDPBVHInputProvider` 从一个参考 BVH 文件（`reference_bvh`）解析骨骼层级结构（骨骼名、父子关系、偏移量、Euler 旋转顺序），然后在后台线程中通过 `recvfrom` 接收 UDP 数据包，逐帧完成 Euler→四元数→FK→坐标变换，并以线程安全的方式存储最新帧。`get_frame()` 首次调用时会阻塞等待第一帧到达（超时默认 30 秒），后续调用立即返回最新帧。退出方式：Ctrl+C / 关闭 viewer 窗口 / UDP 超时。
 
+### Sim2Real 实物部署
+
+Teleopit 支持通过 Unitree SDK2 直接控制实物 G1 机器人，提供手柄遥控和动捕遥操作两种模式。
+
+> **重要**：脚本启动前需要用遥控器手动激活走跑运控（`ai_sport`）。启动时序：机器人开机 → 遥控器进入预备模式 → 遥控器进入走跑运控 → 启动脚本。
+
+**前置准备：**
+
+```bash
+# 添加 Unitree SDK2 Python 为 git submodule
+git submodule add https://github.com/unitreerobotics/unitree_sdk2_python.git third_party/unitree_sdk2_python
+```
+
+**启动控制器：**
+
+```bash
+# 连接实物 G1 后启动（默认 eth0）
+python scripts/run_sim2real.py
+
+# 指定网络接口
+python scripts/run_sim2real.py real_robot.network_interface=enp3s0
+```
+
+**操作流程：**
+1. 按遥控器 **Start** 键 → 进入手柄模式（左摇杆行走，右摇杆转向）
+2. 按 **Y** 键 → 切换到动捕模式（需 UDP 信号校验通过）
+3. 按 **X** 键 → 退出动捕模式进入阻尼（用遥控器重新激活走跑运控后按 Start 恢复）
+4. **L1 + R1** → 急停（任意状态）
+
+详细文档请参见 [Sim2Real 部署指南](docs/sim2real.md)。
+
 ### 编程方式使用
 
 通过 `TeleopPipeline` 可以快速组装并运行整个管线：
@@ -168,6 +200,7 @@ print(f"Session recorded to: {result['record_path']}")
 Teleopit 使用 Hydra 管理配置，结构如下：
 - `default.yaml`: 离线仿真顶层配置文件，组合了机器人、控制器和输入源。
 - `online.yaml`: 实时 online sim2sim 顶层配置（`realtime: true`, `num_steps: 0`）。
+- `sim2real.yaml`: Sim2Real 实物部署配置（手柄/动捕双模式，SDK 参数）。
 - `robot/g1.yaml`: 定义机器人参数（XML 路径、PD 增益、动作维度、默认姿态等）。
 - `controller/rl_policy.yaml`: 定义控制器参数（ONNX 模型路径、动作缩放等）。
 - `input/bvh.yaml`: 定义离线 BVH 输入源参数（BVH 文件路径、重定向格式等）。
@@ -185,6 +218,7 @@ Teleopit/
 ├── scripts/                 # 入口脚本
 │   ├── run_sim.py           # 离线 BVH 仿真
 │   ├── run_online_sim.py    # 实时 UDP 在线仿真
+│   ├── run_sim2real.py      # Sim2Real 实物部署（手柄/动捕双模式）
 │   └── send_bvh_udp.py     # UDP BVH 测试发送工具
 ├── teleopit/                # 核心源码
 │   ├── bus/                 # 消息总线 (InProcessBus)
@@ -196,7 +230,10 @@ Teleopit/
 │   ├── recording/           # 数据记录模块 (HDF5Recorder)
 │   ├── retargeting/         # 运动重定向 (GMR 集成)
 │   ├── robots/              # 机器人物理抽象 (MuJoCoRobot)
-│   └── sim/                 # 仿真控制循环 (SimulationLoop)
+│   ├── sim/                 # 仿真控制循环 (SimulationLoop)
+│   └── sim2real/            # 实物部署 (UnitreeG1Robot, 遥控器, 状态机)
+├── third_party/             # 第三方依赖 (git submodule)
+│   └── unitree_sdk2_python/ # Unitree SDK2 Python
 └── tests/                   # 单元测试与集成测试
 ```
 
@@ -255,6 +292,7 @@ python scripts/run_sim.py --policy policy.onnx
 ```
 
 详细文档：
+- [Sim2Real 部署指南](docs/sim2real.md) — 实物 G1 控制、手柄/动捕双模式、安全操作
 - [训练指南](docs/training.md) — 环境搭建、训练流程、指标解读
 - [资产管理](docs/assets.md) — USD/URDF 转换与验证
 - [常见问题](docs/troubleshooting.md) — PhysX 挂起、Isaac Sim 警告等

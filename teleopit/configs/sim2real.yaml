@@ -1,0 +1,35 @@
+defaults:
+  - robot: g1
+  - controller: rl_policy
+  - input: udp_bvh
+  - _self_
+
+policy_hz: 50.0
+
+# Physical robot SDK configuration
+real_robot:
+  network_interface: "eth0"
+  joint_map: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28]
+  # Real-robot PD gains (from TWIST2 deploy_real, passed directly to SDK — no scaling)
+  kp_real: [100,100,100,150,40,40, 100,100,100,150,40,40, 150,150,150,
+            40,40,40,40,20,20,20, 40,40,40,40,20,20,20]
+  kd_real: [2,2,2,4,2,2, 2,2,2,4,2,2, 4,4,4,
+            5,5,5,5,1,1,1, 5,5,5,5,1,1,1]
+  kd_damping: 8.0      # Damping mode kd
+  control_mode: "PR"    # PR=Pitch-Roll ankle mode
+  msg_type: "HG"        # HG protocol for G1
+
+# Gamepad mode velocity limits
+gamepad:
+  max_vx: 0.5       # m/s forward speed limit
+  max_vy: 0.3       # m/s lateral speed limit
+  max_vyaw: 0.5     # rad/s turning speed limit
+
+# Mocap mode switching safety checks
+mocap_switch:
+  check_frames: 10   # Consecutive valid frames required before switching
+  max_position_value: 5.0  # Position sanity threshold (meters)
+
+hydra:
+  run:
+    dir: .

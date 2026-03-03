@@ -64,6 +64,7 @@ venv.bak/
 data/
 outputs/
 logs/
+*.log
 # Training - downloaded reference assets (re-downloadable)
 teleopit_train/assets/g1/usd/configuration/
 teleopit_train/assets/g1/usd/meshes/
@@ -74,4 +75,3 @@ Thumbs.db
 
 # Hydra runtime output
 .hydra/
-
