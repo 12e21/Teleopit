@@ -3,7 +3,7 @@
 ## 目录结构
 
 ```
-teleopit_train/assets/g1/
+train_mimic/assets/g1/
 ├── g1_29dof_rev_1_0.urdf              # Unitree 官方原始 URDF
 ├── g1_custom_collision_29dof.urdf     # 简化碰撞体的 URDF（训练用）
 └── usd/
@@ -30,7 +30,7 @@ teleopit_train/assets/g1/
 
 ```bash
 conda activate teleopit_isaaclab
-OMNI_KIT_ACCEPT_EULA=YES python teleopit_train/scripts/convert_urdf_isaaclab.py --headless
+OMNI_KIT_ACCEPT_EULA=YES python train_mimic/scripts/convert_urdf_isaaclab.py --headless
 ```
 
 转换脚本 `convert_urdf_isaaclab.py` 使用 Isaac Lab 官方 `UrdfConverter`，配置：
@@ -61,8 +61,7 @@ usd_dir: .                                     # 当前目录
 使用验证脚本检查 USD 结构：
 
 ```bash
-cd teleopit_train
-python scripts/verify_usd_structure.py
+python train_mimic/scripts/verify_usd_structure.py
 ```
 
 验证项目：

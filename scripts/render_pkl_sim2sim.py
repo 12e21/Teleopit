@@ -47,9 +47,18 @@ def _write_video(frames: list[np.ndarray], path: Path, fps: int) -> None:
     print(f"  Saved: {path} ({size_mb:.1f} MB, {len(frames)} frames, {duration:.1f}s @ {fps}fps)")
 
 
+class _NumpyCompatUnpickler(pickle.Unpickler):
+    """Handle pkl files saved with numpy>=2.0 (numpy._core) on numpy<2.0."""
+
+    def find_class(self, module: str, name: str) -> Any:
+        if module.startswith("numpy._core"):
+            module = module.replace("numpy._core", "numpy.core")
+        return super().find_class(module, name)
+
+
 def _load_pkl(pkl_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int]:
     with open(pkl_path, "rb") as f:
-        motion = pickle.load(f)
+        motion = _NumpyCompatUnpickler(f).load()
 
     root_pos = np.asarray(motion["root_pos"], dtype=np.float64)
     root_rot_raw = np.asarray(motion["root_rot"], dtype=np.float64)

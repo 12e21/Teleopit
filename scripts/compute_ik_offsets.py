@@ -107,10 +107,18 @@ def get_robot_tpose_orientations(
     return orientations
 
 
-def get_human_tpose_orientations(bvh_path: str) -> dict[str, np.ndarray]:
+def get_human_tpose_orientations(
+    bvh_path: str, force_no_toe: bool = False
+) -> dict[str, np.ndarray]:
     """Load hc_mocap BVH, get frame 0 bone orientations after Y-up→Z-up rotation.
 
     Replicates the same transform as bvh_provider.py _load_bvh_file().
+
+    Args:
+        bvh_path: Path to BVH file (should be T-pose frame 0).
+        force_no_toe: If True, always use hc_Foot_L/R for FootMod orientation
+            even when LeftToeBase/RightToeBase exist. Used to generate IK offsets
+            for BVH files that lack toe joints.
     """
     sys.path.insert(0, str(PROJECT_ROOT))
     from teleopit.retargeting.gmr.utils.lafan_vendor.extract import read_bvh
@@ -128,8 +136,14 @@ def get_human_tpose_orientations(bvh_path: str) -> dict[str, np.ndarray]:
         orientations[bone] = bone_quat
 
     # Synthesize FootMod entries (same as bvh_provider.py hc_mocap branch)
-    orientations["LeftFootMod"] = orientations["LeftToeBase"].copy()
-    orientations["RightFootMod"] = orientations["RightToeBase"].copy()
+    if force_no_toe:
+        left_toe_key = "hc_Foot_L"
+        right_toe_key = "hc_Foot_R"
+    else:
+        left_toe_key = "LeftToeBase" if "LeftToeBase" in orientations else "hc_Foot_L"
+        right_toe_key = "RightToeBase" if "RightToeBase" in orientations else "hc_Foot_R"
+    orientations["LeftFootMod"] = orientations[left_toe_key].copy()
+    orientations["RightFootMod"] = orientations[right_toe_key].copy()
 
     return orientations
 
@@ -168,6 +182,11 @@ def main():
         "--config",
         default="teleopit/retargeting/gmr/ik_configs/bvh_hc_mocap_to_g1.json",
         help="Path to current IK config (to read robot-human pairs and weights)",
+    )
+    parser.add_argument(
+        "--no-toe",
+        action="store_true",
+        help="Force using hc_Foot_L/R for FootMod (for BVH without toe joints)",
     )
     parser.add_argument(
         "--write",
@@ -223,7 +242,7 @@ def main():
 
     # Step 3: Human T-pose orientations
     print("=== Human T-pose (BVH frame 0, Z-up) ===")
-    human_oris = get_human_tpose_orientations(str(bvh_path))
+    human_oris = get_human_tpose_orientations(str(bvh_path), force_no_toe=args.no_toe)
     for _, human_bone in pairs:
         q = human_oris.get(human_bone)
         if q is not None:

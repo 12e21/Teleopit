@@ -4,8 +4,8 @@ import numpy as np
 import torch
 from typing import cast
 
-from teleopit_train.pose.utils import isaacgym_torch_utils as ref
-from teleopit_train.utils import math_utils as uut
+from train_mimic.pose.utils import isaacgym_torch_utils as ref
+from train_mimic.utils import math_utils as uut
 
 
 def _as_tensor(x: object) -> torch.Tensor:

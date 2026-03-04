@@ -229,7 +229,7 @@ def render_retarget(
     input_prov = BVHInputProvider(bvh_path=str(bvh_path), human_format=bvh_format)
     retargeter = RetargetingModule(
         robot_name="unitree_g1",
-        human_format=f"bvh_{bvh_format}",
+        human_format=f"bvh_{input_prov.human_format}",
         actual_human_height=input_prov.human_height,
     )
 

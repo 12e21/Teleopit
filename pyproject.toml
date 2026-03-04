@@ -53,4 +53,4 @@ train = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["teleopit*", "teleopit_train*"]
+include = ["teleopit*", "train_mimic*"]
