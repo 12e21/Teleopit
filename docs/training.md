@@ -90,8 +90,41 @@ python train_mimic/scripts/train.py \
 - `--headless`：无头模式（无 GUI）
 - `--wandb_project`：可选，启用 wandb 日志记录
 - `--seed 42`：可选，固定随机种子
+- `--motion_file`：可选，覆盖默认运动数据路径（见下方说明）
 
 Checkpoint 保存在 `logs/rsl_rl/g1_mimic/{run_name}/` 目录下。
+
+### 运动数据
+
+训练需要 GMR retarget 后的运动数据（pkl 格式）。默认数据路径为 `data/twist2_retarget_pkl/OMOMO_g1_GMR`。
+
+`motion_file` 支持三种格式：
+- **目录**：加载目录下所有 `.pkl` 文件，权重相等
+- **单个 `.pkl` 文件**：加载单条运动
+- **`.yaml` 清单文件**：指定多条运动及权重
+
+```bash
+# 使用 AMASS 数据集训练
+python train_mimic/scripts/train.py \
+    --task Isaac-G1-Mimic-v0 \
+    --motion_file data/twist2_retarget_pkl/AMASS_g1_GMR8 \
+    --num_envs 4096 --max_iterations 30000 --headless
+
+# 使用单个 pkl 文件训练
+python train_mimic/scripts/train.py \
+    --task Isaac-G1-Mimic-v0 \
+    --motion_file data/twist2_retarget_pkl/OMOMO_g1_GMR/sub10_clothesstand_000.pkl \
+    --num_envs 4096 --max_iterations 30000 --headless
+```
+
+可用的运动数据集（`data/twist2_retarget_pkl/` 下）：
+
+| 目录 | 数量 | 说明 |
+|------|------|------|
+| `OMOMO_g1_GMR` | 5882 | OMOMO 数据集（默认） |
+| `AMASS_g1_GMR8` | 13218 | AMASS 数据集 |
+| `twist1_to_twist2` | - | TWIST1→TWIST2 转换 |
+| `v1_v2_v3_g1` | - | 真实动捕数据 |
 
 ### Phase 2: 导出 ONNX 模型
 

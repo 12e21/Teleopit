@@ -336,12 +336,15 @@ pytest tests/ -v
 
 Teleopit 集成了 TWIST2 的训练代码，作为独立的 `train_mimic` 包，基于 Isaac Lab 进行 GPU 并行仿真训练。
 
+训练需要 GMR retarget 后的运动数据（pkl 格式），默认使用 `data/twist2_retarget_pkl/OMOMO_g1_GMR`。
+`--motion_file` 支持目录（加载所有 pkl）、单个 `.pkl` 文件或 `.yaml` 清单文件。
+
 快速开始：
 
 ```bash
 # 1. 环境搭建（详见 docs/training.md）
 conda activate teleopit_isaaclab
-# 2. 训练 teacher 策略
+# 2. 训练 teacher 策略（默认使用 OMOMO 数据集）
 python train_mimic/scripts/train.py \
     --task Isaac-G1-Mimic-v0 \
     --num_envs 4096 \

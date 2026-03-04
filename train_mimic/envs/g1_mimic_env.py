@@ -217,19 +217,16 @@ class G1MimicEnv(DirectRLEnv):
     def _init_motion_lib(self):
         motion_file = self._resolve_motion_file(self.cfg.motion.motion_file)
         self._motion_file = motion_file
-        self._motion_lib = None
-        self.motion_names = []
-        if motion_file is not None:
-            self._motion_lib = MotionLib(
-                motion_file=motion_file,
-                device=self.device,
-                sample_ratio=self.cfg.motion.sample_ratio,
-                motion_decompose=self.cfg.motion.motion_decompose,
-                motion_smooth=self.cfg.motion.motion_smooth,
-            )
-            self.motion_names = self._motion_lib.get_motion_names()
+        self._motion_lib = MotionLib(
+            motion_file=motion_file,
+            device=self.device,
+            sample_ratio=self.cfg.motion.sample_ratio,
+            motion_decompose=self.cfg.motion.motion_decompose,
+            motion_smooth=self.cfg.motion.motion_smooth,
+        )
+        self.motion_names = self._motion_lib.get_motion_names()
 
-    def _resolve_motion_file(self, motion_file: str) -> str | None:
+    def _resolve_motion_file(self, motion_file: str) -> str:
         if os.path.isabs(motion_file) and os.path.exists(motion_file):
             return motion_file
 
@@ -244,7 +241,15 @@ class G1MimicEnv(DirectRLEnv):
         for candidate in candidates:
             if os.path.exists(candidate):
                 return candidate
-        return None
+
+        raise FileNotFoundError(
+            f"Motion file not found: '{motion_file}'\n"
+            f"  Searched paths:\n"
+            + "\n".join(f"    - {c}" for c in candidates)
+            + "\n  Hint: set motion.motion_file to a valid .pkl file, .yaml manifest, "
+            "or a directory of .pkl files.\n"
+            "  Example: data/twist2_retarget_pkl/OMOMO_g1_GMR"
+        )
 
     def _pre_physics_step(self, actions: torch.Tensor):
         clipped_actions = torch.clamp(actions, -10.0, 10.0)

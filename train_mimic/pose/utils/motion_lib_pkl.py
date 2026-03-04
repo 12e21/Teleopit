@@ -1,4 +1,4 @@
-import os, pickle, yaml
+import glob, os, pickle, yaml
 import torch
 from train_mimic.pose.utils.torch_utils import quat_diff, quat_to_exp_map, slerp, euler_from_quaternion
 from tqdm import tqdm
@@ -307,7 +307,14 @@ class MotionLib:
         return motion_time
                 
     def _fetch_motion_files(self, motion_file: str):
-        if motion_file.endswith(".yaml"):
+        if os.path.isdir(motion_file):
+            motion_files = sorted(glob.glob(os.path.join(motion_file, "*.pkl")))
+            if not motion_files:
+                raise FileNotFoundError(
+                    f"No .pkl files found in directory: {motion_file}"
+                )
+            motion_weights = [1.0] * len(motion_files)
+        elif motion_file.endswith(".yaml"):
             motion_files = []
             motion_weights = []
             with open(motion_file, "r") as f:

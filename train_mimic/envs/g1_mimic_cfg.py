@@ -388,7 +388,7 @@ class G1MotionCfg:
         "head_mocap",
     ])
     upper_key_bodies: list[str] = field(default_factory=list)
-    motion_file: str = "../../../../motion_data/LAFAN1_g1_gmr/dance1_subject2.pkl"
+    motion_file: str = "data/twist2_retarget_pkl/OMOMO_g1_GMR"
     height_offset: float = 0.0
     reset_consec_frames: int = 30  # G1 override
     sample_ratio: float = 1.0

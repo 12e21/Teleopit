@@ -48,6 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--wandb_project", type=str, default=None)
     parser.add_argument("--experiment_name", type=str, default=None)
+    parser.add_argument("--motion_file", type=str, default=None,
+                        help="Override motion file (pkl, yaml, or directory of pkl files)")
     return parser.parse_args()
 
 
@@ -93,7 +95,7 @@ def _build_custom_runner_cfg(agent_cfg: Any, cli_args: argparse.Namespace) -> di
         "save_interval": cfg["save_interval"],
         "experiment_name": cfg["experiment_name"],
         "run_name": cfg.get("run_name", ""),
-        "logger": cfg.get("logger", "wandb"),
+        "logger": "console",
         "wandb_project": cfg.get("wandb_project", "teleopit_isaaclab"),
         "seed": cfg.get("seed", 42),
     }
@@ -105,6 +107,7 @@ def _build_custom_runner_cfg(agent_cfg: Any, cli_args: argparse.Namespace) -> di
         runner_cfg["experiment_name"] = cli_args.experiment_name
     if cli_args.wandb_project is not None:
         runner_cfg["wandb_project"] = cli_args.wandb_project
+        runner_cfg["logger"] = "wandb"
 
     return {
         "runner": runner_cfg,
@@ -197,6 +200,8 @@ def main() -> None:
     env_cfg.seed = args.seed
     if args.num_envs is not None:
         env_cfg.scene.num_envs = args.num_envs
+    if args.motion_file is not None:
+        env_cfg.motion.motion_file = args.motion_file
 
     train_cfg = _build_custom_runner_cfg(agent_cfg, args)
 
