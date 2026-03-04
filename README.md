@@ -20,7 +20,7 @@ Teleopit 采用模块化架构，核心数据流如下所示：
  [ Retargeter ] (集成 GMR: 人体姿态 -> 机器人关节位置)
        |
        v (机器人目标 qpos)
-[ ObservationBuilder ] (复刻 TWIST2 1402D 观测构建)
+[ ObservationBuilder ] (TWIST2 1402D 或 mjlab 189D 观测构建)
        |
        v (平坦化的观测向量)
  [ Controller ] (ONNX 格式 of RL Policy)
@@ -35,6 +35,7 @@ Teleopit 采用模块化架构，核心数据流如下所示：
 
 - **GMR 运动重定向**: 独立集成的 GMR 模块，包含完整资产，支持 unitree_g1, h1 等多种机器人。支持 lafan1 和 hc_mocap 等多种 BVH 格式。
 - **TWIST2 兼容观测**: 精确复刻 1402D (127×11 + 35) 观测构建逻辑，直接支持 TWIST2 预训练模型。
+- **mjlab 追踪观测**: 新增 189D 观测构建器（MjlabObservationBuilder），匹配 mjlab 训练框架的观测结构。
 - **ONNX RL 策略推理**: 采用 `onnxruntime` 进行推理，不依赖完整的 PyTorch 环境即可运行。
 - **MuJoCo 仿真与 PD 控制**: 集成 MuJoCo 物理引擎，支持 1000Hz PD 控制与 50Hz Policy 推理频率。
 - **Sim2Real 实物部署**: 通过 Unitree SDK2 控制实物 G1 机器人，支持手柄遥控和动捕遥操作双模式，含状态机安全管理和急停功能。
@@ -289,6 +290,7 @@ Teleopit/
 │   ├── bus/                 # 消息总线 (InProcessBus)
 │   ├── configs/             # Hydra YAML 配置文件
 │   ├── controllers/         # 控制器实现 (RLPolicy, ObservationBuilder)
+│   │   └── observation.py   # TWIST2ObservationBuilder + MjlabObservationBuilder
 │   ├── inputs/              # 输入设备支持 (BVHProvider, UDPBVHProvider, VRInputStub)
 │   ├── interfaces.py        # 核心抽象接口定义 (Protocol)
 │   ├── pipeline.py          # 管线封装 (TeleopPipeline)
@@ -297,6 +299,21 @@ Teleopit/
 │   ├── robots/              # 机器人物理抽象 (MuJoCoRobot)
 │   ├── sim/                 # 仿真控制循环 (SimulationLoop)
 │   └── sim2real/            # 实物部署 (UnitreeG1Robot, 遥控器, 状态机)
+├── train_mimic/             # 训练模块 (mjlab + rsl_rl PPO)
+│   ├── assets/g1/           # G1 机器人资产 (URDF, XML, meshes)
+│   ├── configs/             # 数据集配置
+│   ├── robots/              # G1 ArticulationCfg, 执行器, action scale
+│   ├── tasks/               # gymnasium 任务注册
+│   │   └── tracking/        # 全身追踪任务
+│   │       ├── mdp/         # MDP 组件 (commands, obs, rewards, events, terms)
+│   │       ├── config/g1/   # G1 环境配置 + PPO 超参
+│   │       └── tracking_env_cfg.py  # ManagerBasedRlEnvCfg
+│   └── scripts/             # 训练/评估/导出脚本
+│       ├── train.py         # 训练脚本
+│       ├── play.py          # 策略回放
+│       ├── benchmark.py     # 追踪误差评估
+│       ├── save_onnx.py     # ONNX 导出
+│       └── convert_pkl_to_npz.py  # PKL→NPZ 数据转换
 ├── third_party/             # 第三方依赖 (git submodule)
 │   └── unitree_sdk2_python/ # Unitree SDK2 Python
 └── tests/                   # 单元测试与集成测试
@@ -334,29 +351,41 @@ pytest tests/ -v
 
 ## 训练
 
-Teleopit 集成了 TWIST2 的训练代码，作为独立的 `train_mimic` 包，基于 Isaac Lab 进行 GPU 并行仿真训练。
+Teleopit 的训练模块 `train_mimic` 基于 mjlab（MuJoCo Warp + Isaac Lab 风格 manager API）和标准 rsl_rl PPO 训练全身运动追踪策略。
 
-训练需要 GMR retarget 后的运动数据（pkl 格式），默认使用 `data/twist2_retarget_pkl/OMOMO_g1_GMR`。
-`--motion_file` 支持目录（加载所有 pkl）、单个 `.pkl` 文件或 `.yaml` 清单文件。
+训练需要 NPZ 格式的运动数据。可通过 `convert_pkl_to_npz.py` 从旧 PKL 格式转换。
 
 快速开始：
 
 ```bash
 # 1. 环境搭建（详见 docs/training.md）
-conda activate teleopit_isaaclab
-# 2. 训练 teacher 策略（默认使用 OMOMO 数据集）
-python train_mimic/scripts/train.py \
-    --task Isaac-G1-Mimic-v0 \
-    --num_envs 4096 \
-    --max_iterations 30000 \
-    --headless
+conda activate teleopit_mjlab
 
-# 3. 导出 ONNX 模型
+# 2. 转换运动数据（PKL → NPZ）
+python train_mimic/scripts/convert_pkl_to_npz.py \
+    --input data/twist2_retarget_pkl/OMOMO_g1_GMR \
+    --output data/twist2_retarget_npz/OMOMO_g1_GMR
+
+# 3. 训练策略（快速验证）
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
+    --num_envs 64 --max_iterations 100 --headless
+
+# 4. 完整训练
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
+    --num_envs 4096 --max_iterations 30000 --headless \
+    --wandb_project teleopit
+
+# 5. 导出 ONNX 模型
 python train_mimic/scripts/save_onnx.py \
-    --checkpoint logs/rsl_rl/g1_mimic/{run_name}/model_30000.pt \
+    --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
     --output policy.onnx
-# 4. 推理
-python scripts/run_sim.py controller.policy_path=policy.onnx
+
+# 6. 策略回放
+python train_mimic/scripts/play.py --task Tracking-Flat-G1-v0 \
+    --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt
+
+# 7. 推理（使用 mjlab 观测构建器）
+python scripts/run_sim.py controller.policy_path=policy.onnx robot.obs_builder=mjlab
 ```
 
 详细文档：

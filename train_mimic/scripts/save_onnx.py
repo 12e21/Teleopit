@@ -1,198 +1,157 @@
 #!/usr/bin/env python3
-"""Export trained policy to ONNX format for hardware deployment.
+"""Export trained tracking policy to ONNX format for hardware deployment.
 
-Adapted for Isaac Lab checkpoint format. Loads checkpoints from
-logs/rsl_rl/{experiment_name}/{run_name}/model_*.pt and exports
-the policy network to ONNX using the HardwareStudentFutureNN wrapper.
+Simplified for standard MLP (no Conv1d motion encoder). Loads rsl_rl
+checkpoint and exports actor network with empirical normalization baked in.
 
 Usage:
-    python save_onnx.py --checkpoint logs/rsl_rl/g1_mimic/run_001/model_5000.pt --output policy.onnx
+    python train_mimic/scripts/save_onnx.py \
+        --checkpoint logs/rsl_rl/g1_tracking/.../model_30000.pt \
+        --output policy.onnx
 """
+
+from __future__ import annotations
 
 import argparse
 import os
+
 import torch
 import torch.nn as nn
 
-# Import policy network (pure PyTorch, works with both IsaacGym and Isaac Lab)
-from train_mimic.rsl_rl.modules.actor_critic_mimic import ActorCriticMimic, get_activation
 
+class PolicyExportWrapper(nn.Module):
+    """Wraps rsl_rl ActorCritic actor for ONNX export with normalization."""
 
-class HardwareStudentFutureNN(nn.Module):
-    """Hardware deployment wrapper for student policy.
-    
-    This is a simplified wrapper that only exports the actor network
-    for hardware deployment. It wraps the actor from ActorCriticMimic
-    and handles observation normalization if a normalizer is provided.
-    """
-    
-    def __init__(self, actor, normalizer=None):
+    def __init__(self, actor: nn.Module, normalizer: nn.Module | None = None) -> None:
         super().__init__()
         self.actor = actor
         self.normalizer = normalizer
-    
-    def forward(self, obs):
-        """Forward pass with optional normalization."""
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
         if self.normalizer is not None:
-            obs = self.normalizer.normalize(obs)
+            obs = self.normalizer(obs)
         return self.actor(obs)
-
-
-def load_checkpoint(checkpoint_path: str) -> dict:
-    """Load checkpoint from Isaac Lab format.
-    
-    Isaac Lab checkpoints may have different structures:
-    - {'model_state_dict': ..., 'optimizer_state_dict': ..., 'iter': ...}
-    - {'ac_state_dict': ..., 'optimizer_state_dict': ..., 'iter': ...}
-    - Direct state dict (legacy format)
-    """
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    return checkpoint
 
 
 def export_policy_as_onnx(
     checkpoint_path: str,
     output_path: str,
-    num_observations: int,
-    num_actions: int,
-    num_motion_observations: int = 9120,
-    num_motion_steps: int = 10,
-    motion_latent_dim: int = 64,
-    actor_hidden_dims: list = None,
-    activation: str = 'elu',
-):
-    """Export policy to ONNX format.
-    
+    num_observations: int = 189,
+    num_actions: int = 29,
+    actor_hidden_dims: list[int] | None = None,
+    activation: str = "elu",
+) -> None:
+    """Export policy to ONNX.
+
     Args:
-        checkpoint_path: Path to checkpoint file
+        checkpoint_path: Path to rsl_rl checkpoint (.pt)
         output_path: Output ONNX file path
-        num_observations: Total observation dimension (10098 for G1)
+        num_observations: Observation dimension (~189 for mjlab tracking)
         num_actions: Action dimension (29 for G1)
-        num_motion_observations: Motion observation dimension (9120 for G1)
-        num_motion_steps: Number of motion timesteps (10 for G1)
-        motion_latent_dim: Motion encoder latent dimension (64 for G1)
-        actor_hidden_dims: Actor network hidden dimensions ([512,256,128] for G1)
-        activation: Activation function ('elu' for G1)
+        actor_hidden_dims: MLP hidden dimensions
+        activation: Activation function name
     """
     if actor_hidden_dims is None:
         actor_hidden_dims = [512, 256, 128]
-    
-    # Load checkpoint
-    checkpoint = load_checkpoint(checkpoint_path)
-    
-    # Extract policy state dict
-    # Try multiple possible keys for Isaac Lab checkpoint format
-    if 'model_state_dict' in checkpoint:
-        policy_state_dict = checkpoint['model_state_dict']
-    elif 'ac_state_dict' in checkpoint:
-        policy_state_dict = checkpoint['ac_state_dict']
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+    # rsl_rl checkpoint format: {'model_state_dict': ..., ...}
+    if "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
     else:
-        # Assume checkpoint IS the state dict (legacy format)
-        policy_state_dict = checkpoint
-    
-    # Instantiate policy network
-    # Note: ActorCriticMimic is pure PyTorch, no Isaac Lab dependencies
-    policy = ActorCriticMimic(
-        num_observations=num_observations,
-        num_critic_observations=num_observations,
-        num_motion_observations=num_motion_observations,
-        num_motion_steps=num_motion_steps,
-        num_actions=num_actions,
-        actor_hidden_dims=actor_hidden_dims,
-        critic_hidden_dims=actor_hidden_dims,  # Same as actor
-        motion_latent_dim=motion_latent_dim,
-        activation=activation,
-    )
-    
-    # Load weights
-    result = policy.load_state_dict(policy_state_dict, strict=False)
+        state_dict = checkpoint
+
+    # Build actor MLP matching rsl_rl ActorCritic structure
+    activation_fn = {"elu": nn.ELU, "relu": nn.ReLU, "tanh": nn.Tanh}[activation]
+    layers: list[nn.Module] = []
+    in_dim = num_observations
+    for hidden_dim in actor_hidden_dims:
+        layers.append(nn.Linear(in_dim, hidden_dim))
+        layers.append(activation_fn())
+        in_dim = hidden_dim
+    layers.append(nn.Linear(in_dim, num_actions))
+    actor = nn.Sequential(*layers)
+
+    # Load actor weights (rsl_rl keys: actor.0.weight, actor.0.bias, ...)
+    actor_state = {}
+    for key, val in state_dict.items():
+        if key.startswith("actor."):
+            actor_state[key[len("actor."):]] = val
+    result = actor.load_state_dict(actor_state, strict=False)
     if result.missing_keys:
-        print(f"[WARNING] Missing keys in checkpoint: {result.missing_keys}")
+        print(f"[WARNING] Missing actor keys: {result.missing_keys}")
     if result.unexpected_keys:
-        print(f"[WARNING] Unexpected keys in checkpoint: {result.unexpected_keys}")
-    policy.eval()
-    
-    # Extract normalizer if available
-    normalizer = checkpoint.get('normalizer', None)
-    
-    # Wrap with hardware deployment wrapper (actor only)
-    hardware_policy = HardwareStudentFutureNN(policy.actor, normalizer)
-    
-    # Export to ONNX
+        print(f"[WARNING] Unexpected actor keys: {result.unexpected_keys}")
+    actor.eval()
+
+    # Extract empirical normalizer if present
+    normalizer = None
+    if "obs_rms.mean" in state_dict and "obs_rms.var" in state_dict:
+        mean = state_dict["obs_rms.mean"]
+        var = state_dict["obs_rms.var"]
+
+        class EmpiricalNormalizer(nn.Module):
+            def __init__(self, m: torch.Tensor, v: torch.Tensor) -> None:
+                super().__init__()
+                self.register_buffer("mean", m)
+                self.register_buffer("std", torch.sqrt(v + 1e-8))
+
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return (x - self.mean) / self.std
+
+        normalizer = EmpiricalNormalizer(mean, var)
+        print("Embedded empirical normalization into ONNX model.")
+
+    # Wrap and export
+    export_model = PolicyExportWrapper(actor, normalizer)
+    export_model.eval()
+
     dummy_input = torch.randn(1, num_observations)
     torch.onnx.export(
-        hardware_policy,
+        export_model,
         dummy_input,
         output_path,
         export_params=True,
         opset_version=11,
         do_constant_folding=True,
-        input_names=['observations'],
-        output_names=['actions'],
-        dynamic_axes={'observations': {0: 'batch_size'}, 'actions': {0: 'batch_size'}},
+        input_names=["observations"],
+        output_names=["actions"],
+        dynamic_axes={
+            "observations": {0: "batch_size"},
+            "actions": {0: "batch_size"},
+        },
     )
-    
-    print(f"✓ Exported ONNX model to: {output_path}")
-    print(f"  Input shape: (batch_size, {num_observations})")
-    print(f"  Output shape: (batch_size, {num_actions})")
+
+    print(f"Exported ONNX model to: {output_path}")
+    print(f"  Input:  observations ({num_observations}D)")
+    print(f"  Output: actions ({num_actions}D)")
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Export trained policy to ONNX format",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Export with default G1 parameters
-  python save_onnx.py --checkpoint logs/rsl_rl/g1_mimic/run_001/model_5000.pt
-  
-  # Export with custom output path
-  python save_onnx.py --checkpoint model.pt --output my_policy.onnx
-  
-  # Export with custom dimensions
-  python save_onnx.py --checkpoint model.pt --num_observations 10098 --num_actions 29
-        """
-    )
-    parser.add_argument("--checkpoint", type=str, required=True, 
-                        help="Path to checkpoint file (e.g., logs/rsl_rl/g1_mimic/run_001/model_5000.pt)")
-    parser.add_argument("--output", type=str, default="policy.onnx", 
-                        help="Output ONNX file path (default: policy.onnx)")
-    parser.add_argument("--num_observations", type=int, default=10098, 
-                        help="Observation dimension (default: 10098 for G1)")
-    parser.add_argument("--num_actions", type=int, default=29, 
-                        help="Action dimension (default: 29 for G1)")
-    parser.add_argument("--num_motion_observations", type=int, default=9120,
-                        help="Motion observation dimension (default: 9120 for G1)")
-    parser.add_argument("--num_motion_steps", type=int, default=10,
-                        help="Number of motion timesteps (default: 10 for G1)")
-    parser.add_argument("--motion_latent_dim", type=int, default=64,
-                        help="Motion encoder latent dimension (default: 64 for G1)")
-    parser.add_argument("--actor_hidden_dims", type=int, nargs='+', default=[512, 256, 128],
-                        help="Actor network hidden dimensions (default: 512 256 128)")
-    parser.add_argument("--activation", type=str, default='elu',
-                        help="Activation function (default: elu)")
-    
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Export tracking policy to ONNX.")
+    parser.add_argument("--checkpoint", type=str, required=True)
+    parser.add_argument("--output", type=str, default="policy.onnx")
+    parser.add_argument("--num_observations", type=int, default=189)
+    parser.add_argument("--num_actions", type=int, default=29)
+    parser.add_argument("--actor_hidden_dims", type=int, nargs="+", default=[512, 256, 128])
+    parser.add_argument("--activation", type=str, default="elu")
     args = parser.parse_args()
-    
-    # Validate checkpoint exists
+
     if not os.path.exists(args.checkpoint):
-        print(f"✗ Error: Checkpoint file not found: {args.checkpoint}")
+        print(f"Error: checkpoint not found: {args.checkpoint}")
         return 1
-    
+
     export_policy_as_onnx(
         checkpoint_path=args.checkpoint,
         output_path=args.output,
         num_observations=args.num_observations,
         num_actions=args.num_actions,
-        num_motion_observations=args.num_motion_observations,
-        num_motion_steps=args.num_motion_steps,
-        motion_latent_dim=args.motion_latent_dim,
         actor_hidden_dims=args.actor_hidden_dims,
         activation=args.activation,
     )
-    
     return 0
 
 
 if __name__ == "__main__":
-    exit(main())
+    raise SystemExit(main())

@@ -1,157 +1,291 @@
 # 训练指南
 
-本文档介绍如何使用 Teleopit 训练 G1 人形机器人的全身运动模仿策略（TWIST2 架构）。
+本文档介绍如何使用 Teleopit 训练 G1 人形机器人的全身运动追踪策略（mjlab + rsl_rl PPO）。
 
 ## 环境搭建
 
 ### 前置要求
 
-- Python 3.11+
+- Python 3.10（推荐）或 3.11+
+  - **注意**：`cyclonedds==0.10.2`（sim2real 依赖）在 Python 3.10 有预编译 wheel，3.11 需要手动编译 CycloneDDS C 库
 - NVIDIA GPU（CUDA 支持）
-- Isaac Sim 5.1.0 + Isaac Lab v2.3.2
 
 ### 安装步骤
 
-1. 创建 conda 环境：
+训练和推理共用同一个 conda 环境，通过 optional dependencies 按需安装：
 
 ```bash
-conda create -n teleopit_isaaclab python=3.11
-conda activate teleopit_isaaclab
-```
+# 创建环境（推荐 Python 3.10，sim2real 兼容性最好）
+conda create -n teleopit python=3.10
+conda activate teleopit
 
-2. 安装 Isaac Sim 5.1.0：
-
-```bash
-pip install isaacsim==5.1.0
-```
-
-3. 从源码安装 Isaac Lab v2.3.2：
-
-```bash
-# clone（推荐 shallow clone 加速）
-git clone --depth 1 --branch v2.3.2 https://github.com/isaac-sim/IsaacLab.git
-cd IsaacLab
-
-# ⚠️ 不要用 pip install isaaclab —— PyPI 上的是 stub 包，缺少 envs/sim 等核心模块
-# 必须从源码逐个安装 extensions：
-
-# 先解决 flatdict 的 build 兼容性问题
-pip install flatdict==4.0.1 --no-build-isolation
-
-# 安装所有 Isaac Lab extensions
-pip install --editable source/isaaclab
-pip install --editable source/isaaclab_assets
-pip install --editable source/isaaclab_tasks
-pip install --editable source/isaaclab_rl
-pip install --editable source/isaaclab_contrib
-pip install --editable source/isaaclab_mimic
-```
-
-4. 安装 Teleopit 及训练依赖：
-
-```bash
 cd Teleopit
-pip install --no-build-isolation -e '.[train]'
+
+# 仅推理（核心依赖：mujoco, onnxruntime, torch 等）
+pip install -e .
+
+# 推理 + 训练（额外安装 rsl_rl, mjlab, wandb 等）
+pip install -e '.[train]'
+
+# 推理 + 训练 + sim2real（全部安装）
+pip install -e '.[train,sim2real]'
 ```
 
-5. 验证安装：
+验证安装：
 
 ```bash
-python -c "
-from isaacsim import SimulationApp
-app = SimulationApp({'headless': True})
-from isaaclab.envs import DirectRLEnvCfg
-import train_mimic.envs
-print('ALL OK')
-app.close()
-"
+# 验证推理侧
+python -c "from teleopit.pipeline import TeleopPipeline; print('inference OK')"
+
+# 验证训练侧
+python -c "import train_mimic.tasks; print('training OK')"
 ```
 
-## 训练流程
+## 运动数据准备
 
-### Phase 1: Teacher 策略训练（PPO）
+### PKL → NPZ 转换
 
-使用 Isaac Lab 的 GPU 并行仿真环境训练 teacher 策略：
+训练使用 NPZ 格式的运动数据。mjlab 的 `MotionLoader` 要求**单个 NPZ 文件**，需要把多个片段合并。
 
 ```bash
-cd Teleopit
-python train_mimic/scripts/train.py \
-    --task Isaac-G1-Mimic-v0 \
-    --num_envs 4096 \
-    --max_iterations 30000 \
-    --headless \
-    --wandb_project teleopit_isaaclab
+# 转换单个文件
+python train_mimic/scripts/convert_pkl_to_npz.py \
+    --input data/twist2_retarget_pkl/OMOMO_g1_GMR/sub10_clothesstand_000.pkl \
+    --output data/twist2_retarget_npz/OMOMO_g1_GMR/sub10_clothesstand_000.npz
+
+# 批量转换 + 合并为单文件（推荐）
+python train_mimic/scripts/convert_pkl_to_npz.py \
+    --input data/twist2_retarget_pkl/OMOMO_g1_GMR \
+    --output data/twist2_retarget_npz/OMOMO_g1_GMR \
+    --merge
+# 产出: data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz
+
+# 已有 NPZ 目录，只做合并
+python train_mimic/scripts/convert_pkl_to_npz.py \
+    --input data/twist2_retarget_npz/OMOMO_g1_GMR \
+    --output data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
+    --merge
 ```
 
-参数说明：
-- `--task Isaac-G1-Mimic-v0`：G1 运动模仿任务
-- `--num_envs 4096`：并行环境数量（GPU 显存允许的情况下越多越好）
-- `--max_iterations 30000`：训练迭代次数
-- `--headless`：无头模式（无 GUI）
-- `--wandb_project`：可选，启用 wandb 日志记录
-- `--seed 42`：可选，固定随机种子
-- `--motion_file`：可选，覆盖默认运动数据路径（见下方说明）
+> **注意**：`--merge` 沿时间轴拼接所有片段，训练时随机采样起始帧，片段间的不连续不影响训练效果。
 
-Checkpoint 保存在 `logs/rsl_rl/g1_mimic/{run_name}/` 目录下。
+### NPZ 数据格式
 
-### 运动数据
+每个 NPZ 文件包含：
 
-训练需要 GMR retarget 后的运动数据（pkl 格式）。默认数据路径为 `data/twist2_retarget_pkl/OMOMO_g1_GMR`。
+| 字段 | 形状 | 说明 |
+|------|------|------|
+| `fps` | scalar | 帧率 |
+| `joint_pos` | (T, 29) | 关节位置 |
+| `joint_vel` | (T, 29) | 关节速度（有限差分） |
+| `body_pos_w` | (T, nb, 3) | 世界坐标系 body 位置 |
+| `body_quat_w` | (T, nb, 4) | 世界坐标系 body 朝向（wxyz） |
+| `body_lin_vel_w` | (T, nb, 3) | 线速度 |
+| `body_ang_vel_w` | (T, nb, 3) | 角速度 |
+| `body_names` | (nb,) | body 名称列表 |
 
-`motion_file` 支持三种格式：
-- **目录**：加载目录下所有 `.pkl` 文件，权重相等
-- **单个 `.pkl` 文件**：加载单条运动
-- **`.yaml` 清单文件**：指定多条运动及权重
+### 可用数据集
 
-```bash
-# 使用 AMASS 数据集训练
-python train_mimic/scripts/train.py \
-    --task Isaac-G1-Mimic-v0 \
-    --motion_file data/twist2_retarget_pkl/AMASS_g1_GMR8 \
-    --num_envs 4096 --max_iterations 30000 --headless
-
-# 使用单个 pkl 文件训练
-python train_mimic/scripts/train.py \
-    --task Isaac-G1-Mimic-v0 \
-    --motion_file data/twist2_retarget_pkl/OMOMO_g1_GMR/sub10_clothesstand_000.pkl \
-    --num_envs 4096 --max_iterations 30000 --headless
-```
-
-可用的运动数据集（`data/twist2_retarget_pkl/` 下）：
+运动数据位于 `data/twist2_retarget_pkl/` 下（PKL 格式，需转换）：
 
 | 目录 | 数量 | 说明 |
 |------|------|------|
 | `OMOMO_g1_GMR` | 5882 | OMOMO 数据集（默认） |
 | `AMASS_g1_GMR8` | 13218 | AMASS 数据集 |
-| `twist1_to_twist2` | - | TWIST1→TWIST2 转换 |
-| `v1_v2_v3_g1` | - | 真实动捕数据 |
+| `twist1_to_twist2` | 12788 | TWIST1→TWIST2 转换 |
+| `v1_v2_v3_g1` | 73 | 真实动捕数据 |
 
-### Phase 2: 导出 ONNX 模型
+## 训练流程
+
+### 快速验证
+
+```bash
+# 默认使用 tensorboard 日志（不需要 wandb）
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
+    --num_envs 64 --max_iterations 100 \
+    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz
+```
+
+### 完整训练
+
+```bash
+# Tensorboard 日志（默认）
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
+    --num_envs 4096 --max_iterations 30000 \
+    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz
+
+# 启用 wandb 日志（需要 wandb 账号）
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
+    --num_envs 4096 --max_iterations 30000 \
+    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
+    --wandb_project teleopit
+```
+
+查看 Tensorboard：
+```bash
+tensorboard --logdir logs/rsl_rl/g1_tracking
+```
+
+参数说明：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--task` | `Tracking-Flat-G1-v0` | 任务名 |
+| `--num_envs` | cfg 默认值 | 并行环境数 |
+| `--max_iterations` | cfg 默认值 | 训练迭代数 |
+| `--motion_file` | cfg 默认值 | NPZ 运动数据路径（必须是单文件） |
+| `--seed` | `42` | 随机种子 |
+| `--wandb_project` | 不设置 | 设置后启用 wandb，否则用 tensorboard |
+| `--experiment_name` | `g1_tracking` | 实验名（影响日志目录） |
+| `--resume` | 不设置 | 从指定 checkpoint 恢复训练 |
+| `--device` | `cuda:0` | 训练设备 |
+
+```bash
+# 使用 AMASS 数据集
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
+    --motion_file data/twist2_retarget_npz/AMASS_g1_GMR8/merged.npz \
+    --num_envs 4096 --max_iterations 30000
+
+# 从 checkpoint 恢复
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
+    --resume logs/rsl_rl/g1_tracking/2026-.../model_10000.pt \
+    --max_iterations 30000
+```
+
+Checkpoint 保存在 `logs/rsl_rl/g1_tracking/{run_name}/` 目录下。
+
+### 导出 ONNX 模型
 
 训练完成后，将 PyTorch checkpoint 导出为 ONNX 格式：
 
 ```bash
 python train_mimic/scripts/save_onnx.py \
-    --checkpoint logs/rsl_rl/g1_mimic/{run_name}/model_30000.pt \
+    --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
     --output policy.onnx
 ```
 
-### Phase 3: 推理部署
+ONNX 模型参数：
+- 输入：`observations`
+- 输出：`actions`（29D）
+- 内嵌 empirical normalization（训练时的运行均值/方差）
+
+### 策略回放（Viewer）
+
+mjlab 提供两种 viewer：
+
+| Viewer | 命令 | 要求 |
+|--------|------|------|
+| **native**（默认）| 无额外参数 | 需要本地显示器（X11/Wayland） |
+| **viser** | `--viewer viser` | 无需显示器，浏览器访问 `localhost:8012` |
+
+```bash
+# Native window（需要显示器）
+python train_mimic/scripts/play.py \
+    --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
+    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz
+
+# 浏览器 viewer（SSH 时推荐，加 --viewer viser 后访问 localhost:8012）
+python train_mimic/scripts/play.py \
+    --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
+    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
+    --viewer viser
+
+# 录制视频（保存到 checkpoint 目录的 videos/play/）
+python train_mimic/scripts/play.py \
+    --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
+    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
+    --video
+```
+
+### 推理部署
 
 使用导出的 ONNX 模型进行遥操推理（MuJoCo 仿真）：
 
 ```bash
-python scripts/run_sim.py controller.policy_path=policy.onnx
+python scripts/run_sim.py controller.policy_path=policy.onnx robot.obs_builder=mjlab
 ```
+
+## 训练配置
+
+### 仿真参数
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| sim_dt | 0.005s | 物理仿真步长 |
+| decimation | 4 | 每 4 个仿真步执行一次策略 |
+| policy_dt | 0.02s (50Hz) | 策略执行频率 |
+| num_envs | 4096 | 推荐并行环境数 |
+
+### 网络架构
+
+- 标准 rsl_rl `ActorCritic` MLP
+- Actor 网络：[512, 256, 128]，ELU 激活
+- 观测维度：~189D（anchor-relative body poses + 关节状态）
+- 动作维度：29D（关节位置目标）
+- Empirical normalization（替代自定义 Normalizer）
+
+### 观测结构
+
+观测定义来自 mjlab 内置的 `TrackingEnvCfg`（[源码](https://github.com/mujocolab/mjlab)）。
+
+**Policy 观测**（actor 输入，带噪声）：
+
+| 观测项 | 说明 |
+|--------|------|
+| `generated_commands` | MotionCommand 输出的命令向量 |
+| `motion_anchor_pos_b` | 运动目标位置（机器人坐标系，3D） |
+| `motion_anchor_ori_b` | 运动目标朝向（6D 旋转表示） |
+| `base_lin_vel` | 根节点线速度（3D） |
+| `base_ang_vel` | 根节点角速度（3D） |
+| `joint_pos_rel` | 关节位置（相对默认值，29D） |
+| `joint_vel_rel` | 关节速度（29D） |
+| `last_action` | 上一步动作（29D） |
+
+**Critic 观测**（value function 输入，无噪声，额外含）：
+
+| 观测项 | 说明 |
+|--------|------|
+| `body_pos` | 关键 body 位置（anchor 坐标系） |
+| `body_ori` | 关键 body 朝向（anchor 坐标系） |
+
+### 奖励函数
+
+奖励定义来自 mjlab 内置的 `TrackingEnvCfg`，DeepMimic 指数核模式：`R = exp(-error² / std²)`
+
+| 奖励 | 权重 | std | 说明 |
+|------|------|-----|------|
+| `motion_global_root_pos` | 0.5 | 0.3 | 根位置追踪 |
+| `motion_global_root_ori` | 0.5 | 0.4 | 根朝向追踪 |
+| `motion_body_pos` | 1.0 | 0.3 | 关键 body 位置追踪 |
+| `motion_body_ori` | 1.0 | 0.4 | 关键 body 朝向追踪 |
+| `motion_body_lin_vel` | 1.0 | 1.0 | 线速度追踪 |
+| `motion_body_ang_vel` | 1.0 | 3.14 | 角速度追踪 |
+| `action_rate_l2` | -0.1 | - | 动作平滑正则 |
+| `joint_limit` | -10.0 | - | 关节限位惩罚 |
+| `self_collisions` | -10.0 | - | 自碰撞惩罚 |
+
+### PPO 超参数
+
+| 参数 | 值 |
+|------|-----|
+| learning_rate | 1e-3 |
+| gamma | 0.99 |
+| lam | 0.95 |
+| entropy_coef | 0.005 |
+| clip_param | 0.2 |
+| num_epochs | 5 |
+| num_mini_batches | 4 |
+| desired_kl | 0.01 |
+| num_steps_per_env | 24 |
+| empirical_normalization | True |
 
 ## 如何判断训练是否有效
 
 ### 关键指标
 
 1. **Mean episode length**（最重要）：应该持续上升，表示机器人站得越来越久
-2. **Mean reward (total)**：在 mimic 任务中，早期可能下降（机器人活得越久，累积 tracking error 越多），后期应回升
-3. **Surrogate loss**：PPO 的策略梯度 loss，应为负值且绝对值逐渐增大
-4. **Mean action noise std**：探索噪声，训练过程中应逐渐减小
+2. **Mean reward (total)**：早期可能下降（机器人活得越久，累积 tracking error 越多），后期应回升
+3. **Body position tracking error**：应逐渐下降
 
 ### 典型训练曲线
 
@@ -161,103 +295,34 @@ python scripts/run_sim.py controller.policy_path=policy.onnx
 迭代 5000-30000: 两者趋于收敛
 ```
 
-### 使用 wandb 监控
-
-如果启用了 `--wandb_project`，可以在 wandb 面板中查看：
-- 各 reward 分量的变化趋势
-- episode length 分布
-- 策略网络的梯度和权重统计
-
-## 训练配置
-
-### 仿真参数
-
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| sim_dt | 0.002s | 物理仿真步长 |
-| decimation | 10 | 每 10 个仿真步执行一次策略 |
-| policy_dt | 0.02s (50Hz) | 策略执行频率 |
-| num_envs | 4096 | 推荐并行环境数 |
-
-### 网络架构
-
-- ActorCriticFuture：Conv1D 历史编码器 + MLP 未来编码器
-- Actor 网络：[512, 512, 256, 128]
-- 观测维度：1402D（127×11 历史 + 35 mimic 特征）
-
-### PhysX 配置
-
-当前已优化的 PhysX 参数（在 `train_mimic/envs/g1_mimic_env.py` 中）：
-
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| max_depenetration_velocity | 10.0 | 防止穿透时的弹射速度上限 |
-| solver_position_iteration_count | 8 | 位置求解器迭代次数 |
-| solver_velocity_iteration_count | 4 | 速度求解器迭代次数 |
-| ImplicitActuator stiffness | 0.0 | 关闭 Isaac Lab 内置 PD（使用自定义 PD） |
-| ImplicitActuator damping | 0.0 | 同上 |
-
-## USD 资产管理
-
-G1 机器人的 USD 资产位于 `train_mimic/assets/g1/usd/g1_29dof.usd`。
-
-如需重新生成 USD（例如修改了 URDF），使用官方 UrdfConverter：
-
-```bash
-conda activate teleopit_isaaclab
-OMNI_KIT_ACCEPT_EULA=YES python train_mimic/scripts/convert_urdf_isaaclab.py --headless
-```
-
-详细的资产管理说明参见 [assets.md](assets.md)。
-
-## Phase 2/3: Student 蒸馏（DAgger）
-
-Student 策略训练（DAgger 蒸馏 + 未来运动编码器）计划在后续迭代中实现。
-
 ## 评估
 
-使用 benchmark 脚本评估训练好的策略:
+使用 benchmark 脚本评估训练好的策略：
 
 ```bash
-# 激活 conda 环境
-eval "$(conda shell.bash hook)" && conda activate teleopit_isaaclab
-
-# 在训练好的 checkpoint 上运行 benchmark
-OMNI_KIT_ACCEPT_EULA=YES python train_mimic/scripts/benchmark.py \
-  --task Isaac-G1-Mimic-v0 \
-  --checkpoint logs/rsl_rl/g1_mimic/run_name/model_30000.pt \
-  --num_envs 1 \
-  --headless
-
-# 覆盖运动文件(可选)
-OMNI_KIT_ACCEPT_EULA=YES python train_mimic/scripts/benchmark.py \
-  --task Isaac-G1-Mimic-v0 \
-  --checkpoint logs/rsl_rl/g1_mimic/run_name/model_30000.pt \
-  --motion_file train_mimic/configs/twist2_dataset.yaml \
-  --headless
+python train_mimic/scripts/benchmark.py \
+    --task Tracking-Flat-G1-v0 \
+    --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
+    --num_envs 1
 ```
 
 ### 跟踪误差
 
-benchmark 脚本计算 8 个跟踪误差:
+benchmark 脚本计算 3 个核心跟踪误差：
+- **anchor_position_error**: 根位置平均误差
+- **anchor_orientation_error**: 根朝向平均误差（四元数角度）
+- **body_position_error**: 关键 body 位置平均误差（9 个部位）
 
-- **joint_dof**: 关节位置平均绝对误差
-- **joint_vel**: 关节速度平均绝对误差
-- **root_translation**: 根位置平均绝对误差 (XYZ)
-- **root_rotation**: 根旋转平均绝对误差 (四元数角度)
-- **root_vel**: 根线速度平均绝对误差 (局部坐标系)
-- **root_ang_vel**: 根角速度平均绝对误差 (局部坐标系)
-- **keybody_pos**: 关键身体部位位置平均绝对误差 (9 个部位: 手、脚、膝盖、肘部、头部)
-- **feet_slip**: 接触加权的脚部速度 (滑动惩罚)
+结果保存到 `benchmark_results/{task}-{checkpoint}.txt`。
 
-### 输出
+## 与旧系统的对比
 
-结果保存到 `benchmark_results/{task}-{checkpoint}.txt`,包含:
-
-- 总误差 (所有 8 个指标之和)
-- 每个指标的平均值
-- 每个身体部位的 keybody 分解 (手、脚、膝盖、肘部、头部)
-
-### 训练期间的 Wandb 日志
-
-训练期间,episode 指标(奖励 + 跟踪误差)会通过 `_reset_idx()` 中填充的 `self.extras["episode"]` 自动记录到 wandb。
+| 特性 | 旧系统 (Isaac Lab) | 新系统 (mjlab) |
+|------|---------------------|----------------|
+| 仿真引擎 | PhysX / USD | MuJoCo Warp |
+| 环境 API | DirectRLEnv + 自定义 runner | ManagerBasedRlEnvCfg + 标准 rsl_rl |
+| 网络架构 | Conv1d motion encoder + MLP | 标准 MLP |
+| 观测维度 | 10098D (含 9120D motion history) | ~189D |
+| 运动数据 | PKL (自定义 MotionLib) | NPZ (mjlab MotionCommand) |
+| Normalization | 自定义 Normalizer | rsl_rl empirical normalization |
+| ONNX 导出 | HardwareStudentFutureNN wrapper | 标准 MLP + 内嵌 normalization |

@@ -6,7 +6,7 @@ from typing import Any, cast
 from omegaconf import DictConfig
 
 from teleopit.bus.in_process import InProcessBus
-from teleopit.controllers.observation import TWIST2ObservationBuilder
+from teleopit.controllers.observation import MjlabObservationBuilder, TWIST2ObservationBuilder
 from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.inputs import BVHInputProvider, UDPBVHInputProvider
 from teleopit.recording.hdf5_recorder import HDF5Recorder
@@ -108,7 +108,7 @@ class TeleopPipeline:
                 _cfg_set(controller_cfg, "default_dof_pos", list(default_angles))
 
         self.controller = RLPolicyController(controller_cfg)
-        self.obs_builder = TWIST2ObservationBuilder(self._build_obs_cfg(robot_cfg))
+        self.obs_builder = self._build_obs_builder(robot_cfg)
         self.bus = InProcessBus()
         self.input_provider = self._build_input_provider(input_cfg)
 
@@ -192,6 +192,21 @@ class TeleopPipeline:
         if provider_kind == "vr_stub":
             return _LoopingInputProvider(provider)
         return provider
+
+    def _build_obs_builder(self, robot_cfg: Any) -> Any:
+        """Build observation builder based on config (mjlab or twist2)."""
+        obs_type = str(_cfg_get(robot_cfg, "obs_builder", "twist2")).lower()
+        if obs_type == "mjlab":
+            xml_path = str(_cfg_get(robot_cfg, "xml_path", ""))
+            obs_cfg = {
+                "num_actions": int(_cfg_get(robot_cfg, "num_actions")),
+                "default_dof_pos": list(_cfg_get(robot_cfg, "default_angles")),
+                "xml_path": xml_path,
+                "tracking_bodies": _cfg_get(robot_cfg, "tracking_bodies", None),
+                "anchor_body_name": _cfg_get(robot_cfg, "anchor_body_name", "torso_link"),
+            }
+            return MjlabObservationBuilder(obs_cfg)
+        return TWIST2ObservationBuilder(self._build_obs_cfg(robot_cfg))
 
     def _build_obs_cfg(self, robot_cfg: Any) -> dict[str, Any]:
         return {

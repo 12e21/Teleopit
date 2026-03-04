@@ -43,12 +43,10 @@ sim2real = [
 train = [
     "torch>=2.0.0",
     "numpy>=1.20.0",
+    "rsl-rl-lib",
+    "mjlab",
     "wandb>=0.15.0",
     "tqdm>=4.65.0",
-    "pybullet>=3.2.5",
-    "termcolor",
-    # Isaac Lab dependencies (installed separately via conda/pip)
-    # See docs/training.md for Isaac Lab installation instructions
 ]
 
 [tool.setuptools.packages.find]
