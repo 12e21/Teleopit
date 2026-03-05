@@ -8,7 +8,9 @@ with ALL frames rendered, so they have identical duration:
   3. *_sim2sim.mp4   — Full RL policy pipeline (BVH → GMR → obs → ONNX → PD → MuJoCo)
 
 Usage:
-    MUJOCO_GL=egl python scripts/render_sim.py --bvh data/lafan1/dance1_subject2.bvh
+    MUJOCO_GL=egl python scripts/render_sim.py \
+        --bvh data/lafan1/dance1_subject2.bvh \
+        --policy /path/to/policy.onnx
 """
 
 from __future__ import annotations
@@ -66,7 +68,10 @@ def _write_video(frames: list[np.ndarray], path: Path, fps: int) -> None:
 
 
 def _load_configs(
-    bvh_path: str, project_root: Path, bvh_format: str = "lafan1"
+    bvh_path: str,
+    project_root: Path,
+    bvh_format: str = "lafan1",
+    policy_path: str | None = None,
 ) -> dict[str, Any]:
     from omegaconf import OmegaConf
 
@@ -92,13 +97,16 @@ def _load_configs(
     )
     robot_cfg.xml_path = str(xml_path)
 
-    policy_path = (
-        project_root.parent / "TWIST2" / "assets" / "ckpts" / "twist2_1017_20k.onnx"
-    )
-    if not policy_path.exists():
-        print(f"ERROR: ONNX policy not found at {policy_path}")
-        sys.exit(1)
-    controller_cfg.policy_path = str(policy_path)
+    if policy_path is not None:
+        resolved_policy = Path(policy_path).expanduser()
+        if not resolved_policy.is_absolute():
+            resolved_policy = (project_root / resolved_policy).resolve()
+        if not resolved_policy.exists():
+            print(f"ERROR: ONNX policy not found at {resolved_policy}")
+            sys.exit(1)
+        controller_cfg.policy_path = str(resolved_policy)
+    else:
+        controller_cfg.policy_path = ""
     controller_cfg.default_dof_pos = list(robot_cfg.default_angles)
 
     input_cfg.bvh_file = str(bvh_path)
@@ -219,7 +227,7 @@ def render_retarget(
 ) -> None:
     """Render GMR retargeting result — set qpos directly, no physics."""
     project_root = _find_project_root()
-    cfgs = _load_configs(str(bvh_path), project_root, bvh_format)
+    cfgs = _load_configs(str(bvh_path), project_root, bvh_format, policy_path=None)
 
     from teleopit.inputs import BVHInputProvider
     from teleopit.retargeting.core import RetargetingModule
@@ -300,10 +308,13 @@ def render_sim2sim(
     fps: int,
     max_frames: int = 0,
     bvh_format: str = "lafan1",
+    policy_path: str | None = None,
 ) -> None:
     """Render full sim2sim: BVH → GMR → obs → ONNX policy → PD control → MuJoCo."""
     project_root = _find_project_root()
-    cfgs = _load_configs(str(bvh_path), project_root, bvh_format)
+    if policy_path is None:
+        raise ValueError("render_sim2sim requires --policy (ONNX exported from train_mimic checkpoint).")
+    cfgs = _load_configs(str(bvh_path), project_root, bvh_format, policy_path=policy_path)
 
     POLICY_HZ = int(cfgs["policy_hz"])
     PD_HZ = int(cfgs["pd_hz"])
@@ -383,9 +394,12 @@ def render_sim2sim(
 
         state = pipeline.robot.get_state()
         obs = loop._build_observation(
-            state=state, mimic_obs=mimic_obs, last_action=loop._last_action
+            state=state,
+            mimic_obs=mimic_obs,
+            last_action=loop._last_action,
+            retarget_qpos=qpos,
         )
-        policy_obs = loop._adapt_observation_for_policy(obs)
+        policy_obs = loop._validate_observation_for_policy(obs)
         action = np.asarray(
             pipeline.controller.compute_action(policy_obs), dtype=np.float32
         ).reshape(-1)
@@ -438,6 +452,12 @@ def main() -> None:
     )
     parser.add_argument("--width", type=int, default=640, help="Video width")
     parser.add_argument("--height", type=int, default=360, help="Video height")
+    parser.add_argument(
+        "--policy",
+        type=str,
+        required=True,
+        help="Path to ONNX policy exported from train_mimic checkpoint",
+    )
     parser.add_argument(
         "--format", type=str, default="lafan1", help="BVH format (lafan1 or hc_mocap)"
     )
@@ -501,6 +521,7 @@ def main() -> None:
         fps=fps,
         max_frames=max_frames,
         bvh_format=args.format,
+        policy_path=args.policy,
     )
 
     print(f"\nDone! Videos saved to {output_dir}/")

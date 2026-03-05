@@ -20,7 +20,7 @@ Teleopit 采用模块化架构，核心数据流如下所示：
  [ Retargeter ] (集成 GMR: 人体姿态 -> 机器人关节位置)
        |
        v (机器人目标 qpos)
-[ ObservationBuilder ] (TWIST2 1402D 或 mjlab 189D 观测构建)
+[ ObservationBuilder ] (mjlab 160D 观测构建)
        |
        v (平坦化的观测向量)
  [ Controller ] (ONNX 格式 of RL Policy)
@@ -34,8 +34,8 @@ Teleopit 采用模块化架构，核心数据流如下所示：
 ## 特性
 
 - **GMR 运动重定向**: 独立集成的 GMR 模块，包含完整资产，支持 unitree_g1, h1 等多种机器人。支持 lafan1 和 hc_mocap 等多种 BVH 格式。
-- **TWIST2 兼容观测**: 精确复刻 1402D (127×11 + 35) 观测构建逻辑，直接支持 TWIST2 预训练模型。
-- **mjlab 追踪观测**: 新增 189D 观测构建器（MjlabObservationBuilder），匹配 mjlab 训练框架的观测结构。
+- **mjlab 追踪观测**: 使用 160D 观测构建器（MjlabObservationBuilder），与 `train_mimic` 训练侧 policy 观测严格对齐。
+- **旧策略弃用**: 旧 TWIST2 ONNX policy 路径已废弃，运行时会直接报错，避免维度/语义不一致。
 - **ONNX RL 策略推理**: 采用 `onnxruntime` 进行推理，不依赖完整的 PyTorch 环境即可运行。
 - **MuJoCo 仿真与 PD 控制**: 集成 MuJoCo 物理引擎，支持 1000Hz PD 控制与 50Hz Policy 推理频率。
 - **Sim2Real 实物部署**: 通过 Unitree SDK2 控制实物 G1 机器人，支持手柄遥控和动捕遥操作双模式，含状态机安全管理和急停功能。
@@ -65,26 +65,26 @@ pip install -e .
 使用 `run_sim.py` 启动基于 BVH 文件的 G1 机器人 sim2sim 仿真。通过 Hydra override 配置参数：
 
 ```bash
-# 运行默认配置 (lafan1 格式 BVH + G1 机器人 + RL 策略)
-python scripts/run_sim.py
+# 运行仿真（需提供 train_mimic 导出的 ONNX policy）
+python scripts/run_sim.py controller.policy_path=policy.onnx
 
 # 指定 BVH 文件
-python scripts/run_sim.py input.bvh_file=data/lafan1/dance1_subject2.bvh
+python scripts/run_sim.py controller.policy_path=policy.onnx input.bvh_file=data/lafan1/dance1_subject2.bvh
 
 # 使用 hc_mocap 格式（自动推导 human_format=bvh_hc_mocap）
-python scripts/run_sim.py input.bvh_file=data/hc_mocap/walk.bvh input.bvh_format=hc_mocap
+python scripts/run_sim.py controller.policy_path=policy.onnx input.bvh_file=data/hc_mocap/walk.bvh input.bvh_format=hc_mocap
 
 # 同时开启 BVH 骨架、运动学重定向、物理仿真三个可视化窗口
-python scripts/run_sim.py input.bvh_file=data/hc_mocap/walk.bvh input.bvh_format=hc_mocap viewers=all
+python scripts/run_sim.py controller.policy_path=policy.onnx input.bvh_file=data/hc_mocap/walk.bvh input.bvh_format=hc_mocap viewers=all
 
 # 只开 retarget + sim2sim（不显示 BVH 原始骨架）
-python scripts/run_sim.py 'viewers=[retarget,sim2sim]'
+python scripts/run_sim.py controller.policy_path=policy.onnx 'viewers=[retarget,sim2sim]'
 
 # 关闭所有可视化窗口
-python scripts/run_sim.py viewers=none
+python scripts/run_sim.py controller.policy_path=policy.onnx viewers=none
 
 # 运行更多步数并录制 HDF5
-python scripts/run_sim.py num_steps=5000 record=true
+python scripts/run_sim.py controller.policy_path=policy.onnx +num_steps=5000 +record=true
 ```
 
 常用参数：
@@ -111,7 +111,7 @@ python scripts/run_sim.py num_steps=5000 record=true
 
 ```bash
 # 终端 1: 启动 online sim（默认监听 UDP 端口 1118，等待数据到达后开始仿真）
-python scripts/run_online_sim.py
+python scripts/run_online_sim.py controller.policy_path=policy.onnx
 
 # 终端 2: 发送测试数据（从 BVH 文件读取并循环发送）
 python scripts/send_bvh_udp.py --bvh data/hc_mocap/wander.bvh --loop
@@ -121,16 +121,16 @@ python scripts/send_bvh_udp.py --bvh data/hc_mocap/wander.bvh --loop
 
 ```bash
 # 全部 viewer（BVH 骨架 + 运动学重定向 + 物理仿真）
-python scripts/run_online_sim.py viewers=all
+python scripts/run_online_sim.py controller.policy_path=policy.onnx viewers=all
 
 # 无窗口模式
-python scripts/run_online_sim.py viewers=none
+python scripts/run_online_sim.py controller.policy_path=policy.onnx viewers=none
 
 # 自定义 UDP 端口
-python scripts/run_online_sim.py input.udp_port=1119
+python scripts/run_online_sim.py controller.policy_path=policy.onnx input.udp_port=1119
 
 # 指定步数（默认 num_steps=0 表示无限循环，Ctrl+C 退出）
-python scripts/run_online_sim.py num_steps=5000
+python scripts/run_online_sim.py controller.policy_path=policy.onnx num_steps=5000
 ```
 
 **send_bvh_udp.py 参数：**
@@ -152,26 +152,27 @@ python scripts/run_online_sim.py num_steps=5000
 
 ```bash
 # 渲染单个 BVH 文件（输出到 outputs/ 目录）
-MUJOCO_GL=egl python scripts/render_sim.py --bvh data/hc_mocap/wander.bvh --format hc_mocap
+MUJOCO_GL=egl python scripts/render_sim.py --bvh data/hc_mocap/wander.bvh --format hc_mocap --policy policy.onnx
 
 # 限制渲染时长（秒）
-MUJOCO_GL=egl python scripts/render_sim.py --bvh data/hc_mocap/wander.bvh --format hc_mocap --max_seconds 10
+MUJOCO_GL=egl python scripts/render_sim.py --bvh data/hc_mocap/wander.bvh --format hc_mocap --max_seconds 10 --policy policy.onnx
 
 # lafan1 格式（默认）
-MUJOCO_GL=egl python scripts/render_sim.py --bvh data/lafan1/dance1_subject2.bvh
+MUJOCO_GL=egl python scripts/render_sim.py --bvh data/lafan1/dance1_subject2.bvh --policy policy.onnx
 
 # 自定义分辨率
-MUJOCO_GL=egl python scripts/render_sim.py --bvh data/hc_mocap/wander.bvh --format hc_mocap --width 1280 --height 720
+MUJOCO_GL=egl python scripts/render_sim.py --bvh data/hc_mocap/wander.bvh --format hc_mocap --width 1280 --height 720 --policy policy.onnx
 
 # 批量渲染 data/hc_mocap 下所有动作文件
 for f in data/hc_mocap/motion-*.bvh; do
-    MUJOCO_GL=egl python scripts/render_sim.py --bvh "$f" --format hc_mocap
+    MUJOCO_GL=egl python scripts/render_sim.py --bvh "$f" --format hc_mocap --policy policy.onnx
 done
 ```
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--bvh` | (必选) | BVH 文件路径 |
+| `--policy` | (必选) | train_mimic 导出的 ONNX policy 路径 |
 | `--format` | `lafan1` | BVH 格式：`lafan1` 或 `hc_mocap` |
 | `--max_seconds` | `0` | 最大渲染时长（秒），0 = 渲染完整 BVH |
 | `--width` | `640` | 视频宽度（像素） |
@@ -185,23 +186,24 @@ done
 
 ```bash
 # 渲染单个 pkl 文件（输出到 outputs/pkl_sim2sim/{文件名}/ 目录）
-MUJOCO_GL=egl python scripts/render_pkl_sim2sim.py --pkl data/twist2_retarget_pkl/OMOMO_g1_GMR/sub1_clothesstand_000.pkl
+MUJOCO_GL=egl python scripts/render_pkl_sim2sim.py --pkl data/twist2_retarget_pkl/OMOMO_g1_GMR/sub1_clothesstand_000.pkl --policy policy.onnx
 
 # 限制渲染时长
-MUJOCO_GL=egl python scripts/render_pkl_sim2sim.py --pkl data/twist2_retarget_pkl/OMOMO_g1_GMR/sub1_clothesstand_000.pkl --max_seconds 10
+MUJOCO_GL=egl python scripts/render_pkl_sim2sim.py --pkl data/twist2_retarget_pkl/OMOMO_g1_GMR/sub1_clothesstand_000.pkl --max_seconds 10 --policy policy.onnx
 
 # 自定义输出目录和分辨率
-MUJOCO_GL=egl python scripts/render_pkl_sim2sim.py --pkl data/twist2_retarget_pkl/v1_v2_v3_g1/0807_yanjie_walk_001.pkl --output_dir outputs/custom --width 1280 --height 720
+MUJOCO_GL=egl python scripts/render_pkl_sim2sim.py --pkl data/twist2_retarget_pkl/v1_v2_v3_g1/0807_yanjie_walk_001.pkl --output_dir outputs/custom --width 1280 --height 720 --policy policy.onnx
 
 # 批量渲染
 for f in data/twist2_retarget_pkl/v1_v2_v3_g1/*.pkl; do
-    MUJOCO_GL=egl python scripts/render_pkl_sim2sim.py --pkl "$f"
+    MUJOCO_GL=egl python scripts/render_pkl_sim2sim.py --pkl "$f" --policy policy.onnx
 done
 ```
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--pkl` | (必选) | `.pkl` 运动文件路径 |
+| `--policy` | (必选) | train_mimic 导出的 ONNX policy 路径 |
 | `--output_dir` | `outputs/pkl_sim2sim/{stem}/` | 输出目录 |
 | `--max_seconds` | `0` | 最大渲染时长（秒），0 = 渲染完整动作 |
 | `--width` | `640` | 视频宽度（像素） |
@@ -226,10 +228,10 @@ git submodule add https://github.com/unitreerobotics/unitree_sdk2_python.git thi
 
 ```bash
 # 连接实物 G1 后启动（默认 eth0）
-python scripts/run_sim2real.py
+python scripts/run_sim2real.py controller.policy_path=policy.onnx
 
 # 指定网络接口
-python scripts/run_sim2real.py real_robot.network_interface=enp3s0
+python scripts/run_sim2real.py controller.policy_path=policy.onnx real_robot.network_interface=enp3s0
 ```
 
 **操作流程：**
@@ -290,7 +292,7 @@ Teleopit/
 │   ├── bus/                 # 消息总线 (InProcessBus)
 │   ├── configs/             # Hydra YAML 配置文件
 │   ├── controllers/         # 控制器实现 (RLPolicy, ObservationBuilder)
-│   │   └── observation.py   # TWIST2ObservationBuilder + MjlabObservationBuilder
+│   │   └── observation.py   # MjlabObservationBuilder (160D, 默认) + legacy TWIST2 builder
 │   ├── inputs/              # 输入设备支持 (BVHProvider, UDPBVHProvider, VRInputStub)
 │   ├── interfaces.py        # 核心抽象接口定义 (Protocol)
 │   ├── pipeline.py          # 管线封装 (TeleopPipeline)
@@ -385,7 +387,7 @@ python train_mimic/scripts/play.py --task Tracking-Flat-G1-v0 \
     --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt
 
 # 7. 推理（使用 mjlab 观测构建器）
-python scripts/run_sim.py controller.policy_path=policy.onnx robot.obs_builder=mjlab
+python scripts/run_sim.py controller.policy_path=policy.onnx
 ```
 
 详细文档：

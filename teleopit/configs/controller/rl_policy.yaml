@@ -1,4 +1,4 @@
-policy_path: "/home/wubingqian/project/teleop_projects/Teleopit/teleopit/assets/rl_controller/twist2_1017_20k.onnx"
+policy_path: ""  # must be provided: ONNX exported from train_mimic checkpoint
 device: "cpu"
 
 action_scale: 0.5

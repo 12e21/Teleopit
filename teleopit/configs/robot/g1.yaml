@@ -1,4 +1,5 @@
 num_actions: 29
+obs_builder: "mjlab"  # only mjlab is supported for policy inference
 
 kps: [100, 100, 100, 150, 40, 40,
       100, 100, 100, 150, 40, 40,

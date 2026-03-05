@@ -35,6 +35,11 @@ class RLPolicyController:
         policy_path = Path(str(self._cfg_get(cfg, "policy_path", ""))).expanduser()
         if not policy_path.is_file():
             raise FileNotFoundError(f"ONNX policy file not found: {policy_path}")
+        if "twist2_1017_20k.onnx" in str(policy_path):
+            raise ValueError(
+                f"Deprecated policy is not supported: {policy_path}. "
+                "Use ONNX exported from train_mimic checkpoint (mjlab-aligned)."
+            )
 
         try:
             ort = importlib.import_module("onnxruntime")
@@ -51,6 +56,11 @@ class RLPolicyController:
         self._output_name = self._session.get_outputs()[0].name
 
         self._expected_obs_dim = self._extract_feature_dim(self._session.get_inputs()[0].shape)
+        if self._expected_obs_dim is not None and self._expected_obs_dim != 160:
+            raise ValueError(
+                f"Unsupported policy input dimension: {self._expected_obs_dim}. "
+                "Only mjlab-aligned 160D policies exported from train_mimic are supported."
+            )
 
         self.action_scale = np.asarray(
             self._cfg_get(cfg, "action_scale", 1.0),

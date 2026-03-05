@@ -24,10 +24,10 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from teleopit.controllers.observation import MjlabObservationBuilder, TWIST2ObservationBuilder
+from teleopit.controllers.observation import MjlabObservationBuilder
 from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.inputs.udp_bvh_provider import UDPBVHInputProvider
-from teleopit.retargeting.core import RetargetingModule, extract_mimic_obs
+from teleopit.retargeting.core import RetargetingModule
 from teleopit.sim2real.remote import UnitreeRemote
 from teleopit.sim2real.unitree_g1 import UnitreeG1Robot
 
@@ -138,31 +138,23 @@ class Sim2RealController:
 
         self.policy = RLPolicyController(controller_cfg)
 
-        # ObservationBuilder -- choose based on config
-        obs_type = str(_cfg_get(robot_cfg, "obs_builder", "twist2")).lower()
-        if obs_type == "mjlab":
-            xml_path = str(_cfg_get(robot_cfg, "xml_path", ""))
-            if xml_path and not Path(xml_path).is_absolute():
-                xml_path = str((self._project_root / xml_path).resolve())
-            obs_cfg = {
-                "num_actions": int(_cfg_get(robot_cfg, "num_actions", 29)),
-                "default_dof_pos": list(_cfg_get(robot_cfg, "default_angles")),
-                "xml_path": xml_path,
-                "tracking_bodies": _cfg_get(robot_cfg, "tracking_bodies", None),
-                "anchor_body_name": _cfg_get(robot_cfg, "anchor_body_name", "torso_link"),
-            }
-            self.obs_builder = MjlabObservationBuilder(obs_cfg)
-        else:
-            obs_cfg = {
-                "num_actions": int(_cfg_get(robot_cfg, "num_actions", 29)),
-                "ang_vel_scale": float(_cfg_get(robot_cfg, "ang_vel_scale", 0.25)),
-                "dof_pos_scale": float(_cfg_get(robot_cfg, "dof_pos_scale", 1.0)),
-                "dof_vel_scale": float(_cfg_get(robot_cfg, "dof_vel_scale", 0.05)),
-                "ankle_idx": list(_cfg_get(robot_cfg, "ankle_idx", [4, 5, 10, 11])),
-                "default_dof_pos": list(_cfg_get(robot_cfg, "default_angles")),
-            }
-            self.obs_builder = TWIST2ObservationBuilder(obs_cfg)
-        self._obs_type = obs_type
+        # ObservationBuilder -- mjlab-aligned path only.
+        obs_type = str(_cfg_get(robot_cfg, "obs_builder", "mjlab")).lower()
+        if obs_type != "mjlab":
+            raise ValueError(
+                f"Unsupported robot.obs_builder='{obs_type}'. "
+                "TWIST2 policy path is deprecated; use mjlab-aligned policy and set robot.obs_builder=mjlab."
+            )
+        xml_path = str(_cfg_get(robot_cfg, "xml_path", ""))
+        if xml_path and not Path(xml_path).is_absolute():
+            xml_path = str((self._project_root / xml_path).resolve())
+        obs_cfg = {
+            "num_actions": int(_cfg_get(robot_cfg, "num_actions", 29)),
+            "default_dof_pos": list(_cfg_get(robot_cfg, "default_angles")),
+            "xml_path": xml_path,
+            "anchor_body_name": _cfg_get(robot_cfg, "anchor_body_name", "torso_link"),
+        }
+        self.obs_builder = MjlabObservationBuilder(obs_cfg)
 
         # Default standing pose (29-DOF)
         self.default_angles = np.asarray(
@@ -308,21 +300,23 @@ class Sim2RealController:
         # Robot state from SDK
         robot_state = self.robot.get_state()
 
-        # Build observation based on obs builder type
-        if self._obs_type == "mjlab":
-            # For MjlabObservationBuilder: provide motion anchor pos/quat
-            motion_pos = np.asarray(qpos[:3], dtype=np.float32)
-            motion_quat = np.asarray(qpos[3:7], dtype=np.float32)
-            obs = self.obs_builder.build(robot_state, motion_pos, motion_quat, self._last_action)
-        else:
-            # Legacy TWIST2 path
-            mimic_obs = extract_mimic_obs(
-                qpos=qpos,
-                last_qpos=self._last_retarget_qpos,
-                dt=1.0 / self.policy_hz,
+        if qpos.shape[0] < 7 + self.num_actions:
+            raise ValueError(
+                f"Retargeted qpos too short: {qpos.shape[0]} (need >= {7 + self.num_actions})"
             )
-            obs = self.obs_builder.build(robot_state, mimic_obs, self._last_action)
-            obs = self._adapt_observation_for_policy(obs)
+        motion_joint_pos = np.asarray(qpos[7:7 + self.num_actions], dtype=np.float32)
+        if self._last_retarget_qpos is None:
+            motion_joint_vel = np.zeros((self.num_actions,), dtype=np.float32)
+        else:
+            prev_joint_pos = np.asarray(self._last_retarget_qpos[7:7 + self.num_actions], dtype=np.float32)
+            motion_joint_vel = (motion_joint_pos - prev_joint_pos) * np.float32(self.policy_hz)
+        obs = self.obs_builder.build(
+            robot_state,
+            np.asarray(qpos[:7 + self.num_actions], dtype=np.float32),
+            motion_joint_vel,
+            self._last_action,
+        )
+        obs = self._validate_observation_for_policy(obs)
 
         action = self.policy.compute_action(obs)
         target_dof_pos = self.policy.get_target_dof_pos(action)
@@ -557,17 +551,18 @@ class Sim2RealController:
             raise ValueError(f"Retargeted qpos too short: {qpos.shape[0]} (need >= 36)")
         return qpos
 
-    def _adapt_observation_for_policy(self, obs: Float32Array) -> Float32Array:
-        """Pad or truncate observation to match policy input dimension."""
+    def _validate_observation_for_policy(self, obs: Float32Array) -> Float32Array:
+        """Fail-fast validation for policy input observation dimension."""
         expected = getattr(self.policy, "_expected_obs_dim", None)
         if not isinstance(expected, int) or expected <= 0:
             return obs
-        if obs.shape[0] == expected:
-            return obs
-        if obs.shape[0] > expected:
-            return obs[:expected]
-        pad = np.zeros(expected - obs.shape[0], dtype=np.float32)
-        return np.concatenate((obs, pad), dtype=np.float32)
+        if obs.shape[0] != expected:
+            raise ValueError(
+                f"Observation dimension mismatch: obs_builder produced {obs.shape[0]}, "
+                f"but policy expects {expected}. "
+                "Use a matching mjlab-aligned ONNX policy; automatic pad/trim is disabled."
+            )
+        return obs
 
     @staticmethod
     def _sleep_until(t0: float, dt: float) -> None:

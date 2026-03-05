@@ -8,6 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from teleopit.bus.topics import TOPIC_ACTION, TOPIC_MIMIC_OBS, TOPIC_ROBOT_STATE
+from teleopit.controllers.observation import MjlabObservationBuilder
 from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Recorder, Retargeter, Robot
 from teleopit.retargeting.core import extract_mimic_obs
 
@@ -406,8 +407,13 @@ class SimulationLoop:
                 mimic_obs = extract_mimic_obs(qpos=qpos, last_qpos=self._last_retarget_qpos, dt=1.0 / self.policy_hz)
 
                 state = self.robot.get_state()
-                obs = self._build_observation(state=state, mimic_obs=mimic_obs, last_action=self._last_action)
-                policy_obs = self._adapt_observation_for_policy(obs)
+                obs = self._build_observation(
+                    state=state,
+                    mimic_obs=mimic_obs,
+                    last_action=self._last_action,
+                    retarget_qpos=qpos,
+                )
+                policy_obs = self._validate_observation_for_policy(obs)
                 action: Float32Array = np.asarray(self.controller.compute_action(policy_obs), dtype=np.float32).reshape(-1)
                 if action.shape[0] != self._num_actions:
                     raise ValueError(f"Controller returned {action.shape[0]} actions, expected {self._num_actions}")
@@ -511,11 +517,37 @@ class SimulationLoop:
             raise ValueError(f"Target dof pos has {target.shape[0]} entries, expected {self._num_actions}")
         return target
 
-    def _build_observation(self, state: object, mimic_obs: Float32Array, last_action: Float32Array) -> Float32Array:
-        if hasattr(self.obs_builder, "build"):
+    def _build_observation(
+        self,
+        state: object,
+        mimic_obs: Float32Array,
+        last_action: Float32Array,
+        retarget_qpos: Float64Array,
+    ) -> Float32Array:
+        if isinstance(self.obs_builder, MjlabObservationBuilder):
+            if retarget_qpos.shape[0] < 7 + self._num_actions:
+                raise ValueError(
+                    f"Retargeted qpos too short for MjlabObservationBuilder: {retarget_qpos.shape[0]} "
+                    f"(need >= {7 + self._num_actions})"
+                )
+            motion_joint_pos = np.asarray(retarget_qpos[7:7 + self._num_actions], dtype=np.float32)
+            if self._last_retarget_qpos is None:
+                motion_joint_vel = np.zeros((self._num_actions,), dtype=np.float32)
+            else:
+                prev_joint_pos = np.asarray(self._last_retarget_qpos[7:7 + self._num_actions], dtype=np.float32)
+                motion_joint_vel = (motion_joint_pos - prev_joint_pos) * np.float32(self.policy_hz)
+            obs = self.obs_builder.build(
+                cast(object, state),
+                np.asarray(retarget_qpos[:7 + self._num_actions], dtype=np.float32),
+                motion_joint_vel,
+                last_action,
+            )
+        elif hasattr(self.obs_builder, "build_observation"):
+            obs = cast(_SupportsBuildObservation, self.obs_builder).build_observation(state, [last_action], mimic_obs)
+        elif hasattr(self.obs_builder, "build"):
             obs = cast(_SupportsBuild, cast(object, self.obs_builder)).build(state, mimic_obs, last_action)
         else:
-            obs = cast(_SupportsBuildObservation, self.obs_builder).build_observation(state, [last_action], mimic_obs)
+            raise TypeError("ObservationBuilder must provide build_observation() or build().")
         return np.asarray(obs, dtype=np.float32)
 
     def _publish(self, mimic_obs: Float32Array, action: Float32Array, robot_state: object) -> None:
@@ -607,16 +639,17 @@ class SimulationLoop:
             raise ValueError(f"Expected numeric config value, got {value}")
         return float(value)
 
-    def _adapt_observation_for_policy(self, obs: Float32Array) -> Float32Array:
+    def _validate_observation_for_policy(self, obs: Float32Array) -> Float32Array:
         expected_raw = getattr(self.controller, "_expected_obs_dim", None)
         if not isinstance(expected_raw, int) or expected_raw <= 0:
             return obs
-        if obs.shape[0] == expected_raw:
-            return obs
-        if obs.shape[0] > expected_raw:
-            return obs[:expected_raw]
-        pad = np.zeros((expected_raw - obs.shape[0],), dtype=np.float32)
-        return np.concatenate((obs, pad), dtype=np.float32)
+        if obs.shape[0] != expected_raw:
+            raise ValueError(
+                f"Observation dimension mismatch: obs_builder produced {obs.shape[0]}, "
+                f"but policy expects {expected_raw}. "
+                "Use a matching observation builder and ONNX policy; automatic pad/trim is disabled."
+            )
+        return obs
 
     def _get_root_height(self, state: object) -> float:
         robot_data = getattr(self.robot, "data", None)

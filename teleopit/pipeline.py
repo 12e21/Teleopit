@@ -6,7 +6,7 @@ from typing import Any, cast
 from omegaconf import DictConfig
 
 from teleopit.bus.in_process import InProcessBus
-from teleopit.controllers.observation import MjlabObservationBuilder, TWIST2ObservationBuilder
+from teleopit.controllers.observation import MjlabObservationBuilder
 from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.inputs import BVHInputProvider, UDPBVHInputProvider
 from teleopit.recording.hdf5_recorder import HDF5Recorder
@@ -194,29 +194,21 @@ class TeleopPipeline:
         return provider
 
     def _build_obs_builder(self, robot_cfg: Any) -> Any:
-        """Build observation builder based on config (mjlab or twist2)."""
-        obs_type = str(_cfg_get(robot_cfg, "obs_builder", "twist2")).lower()
-        if obs_type == "mjlab":
-            xml_path = str(_cfg_get(robot_cfg, "xml_path", ""))
-            obs_cfg = {
-                "num_actions": int(_cfg_get(robot_cfg, "num_actions")),
-                "default_dof_pos": list(_cfg_get(robot_cfg, "default_angles")),
-                "xml_path": xml_path,
-                "tracking_bodies": _cfg_get(robot_cfg, "tracking_bodies", None),
-                "anchor_body_name": _cfg_get(robot_cfg, "anchor_body_name", "torso_link"),
-            }
-            return MjlabObservationBuilder(obs_cfg)
-        return TWIST2ObservationBuilder(self._build_obs_cfg(robot_cfg))
-
-    def _build_obs_cfg(self, robot_cfg: Any) -> dict[str, Any]:
-        return {
+        """Build observation builder. Only mjlab tracking observations are supported."""
+        obs_type = str(_cfg_get(robot_cfg, "obs_builder", "mjlab")).lower()
+        if obs_type != "mjlab":
+            raise ValueError(
+                f"Unsupported robot.obs_builder='{obs_type}'. "
+                "TWIST2 policy path is deprecated; use mjlab-aligned policy and set robot.obs_builder=mjlab."
+            )
+        xml_path = str(_cfg_get(robot_cfg, "xml_path", ""))
+        obs_cfg = {
             "num_actions": int(_cfg_get(robot_cfg, "num_actions")),
-            "ang_vel_scale": float(_cfg_get(robot_cfg, "ang_vel_scale", 0.25)),
-            "dof_pos_scale": float(_cfg_get(robot_cfg, "dof_pos_scale", 1.0)),
-            "dof_vel_scale": float(_cfg_get(robot_cfg, "dof_vel_scale", 0.05)),
-            "ankle_idx": list(_cfg_get(robot_cfg, "ankle_idx", [4, 5, 10, 11])),
             "default_dof_pos": list(_cfg_get(robot_cfg, "default_angles")),
+            "xml_path": xml_path,
+            "anchor_body_name": _cfg_get(robot_cfg, "anchor_body_name", "torso_link"),
         }
+        return MjlabObservationBuilder(obs_cfg)
 
     def _prepare_cfg_paths(self) -> None:
         robot_cfg = cast(Any, _cfg_get(self.cfg, "robot"))
@@ -236,8 +228,14 @@ class TeleopPipeline:
         if controller_cfg is not None:
             policy = str(_cfg_get(controller_cfg, "policy_path", ""))
             if not policy or policy == "None":
-                default_policy = self._project_root.parent / "TWIST2" / "assets" / "ckpts" / "twist2_1017_20k.onnx"
-                _cfg_set(controller_cfg, "policy_path", str(default_policy.resolve()))
+                raise ValueError(
+                    "controller.policy_path must be set to an ONNX exported from train_mimic checkpoint. "
+                    "Deprecated TWIST2 default policy is removed."
+                )
+            policy_path = Path(policy).expanduser()
+            if not policy_path.is_absolute():
+                policy_path = (self._project_root / policy_path).resolve()
+                _cfg_set(controller_cfg, "policy_path", str(policy_path))
 
         if input_cfg is not None:
             provider_kind = str(_cfg_get(input_cfg, "provider", "bvh")).lower()

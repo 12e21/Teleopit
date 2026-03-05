@@ -2,7 +2,9 @@
 """Render sim2sim videos directly from TWIST2 .pkl motion files.
 
 Usage:
-    MUJOCO_GL=egl python scripts/render_pkl_sim2sim.py --pkl data/twist2/OMOMO_g1_GMR/sub1_clothesstand_000.pkl
+    MUJOCO_GL=egl python scripts/render_pkl_sim2sim.py \
+        --pkl data/twist2/OMOMO_g1_GMR/sub1_clothesstand_000.pkl \
+        --policy policy.onnx
 """
 from __future__ import annotations
 
@@ -135,6 +137,7 @@ def render_pkl_retarget(
 
 def render_pkl_sim2sim(
     pkl_path: Path,
+    policy_path: Path,
     output_path: Path,
     width: int = 640,
     height: int = 360,
@@ -150,9 +153,8 @@ def render_pkl_sim2sim(
     print(f"  PKL: {n_frames} frames @ {motion_fps}fps = {motion_duration:.1f}s, {dof_pos.shape[1]} DOF")
 
     from omegaconf import OmegaConf
+    from teleopit.controllers.observation import MjlabObservationBuilder
     from teleopit.controllers.rl_policy import RLPolicyController
-    from teleopit.controllers.observation import TWIST2ObservationBuilder
-    from teleopit.retargeting.core import extract_mimic_obs
     from teleopit.robots.mujoco_robot import MuJoCoRobot
 
     robot_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "robot" / "g1.yaml")
@@ -162,7 +164,6 @@ def render_pkl_sim2sim(
     sim2sim_xml = project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml"
     robot_cfg.xml_path = str(sim2sim_xml)
 
-    policy_path = project_root.parent / "TWIST2" / "assets" / "ckpts" / "twist2_1017_20k.onnx"
     if not policy_path.exists():
         print(f"ERROR: ONNX policy not found at {policy_path}")
         sys.exit(1)
@@ -178,13 +179,11 @@ def render_pkl_sim2sim(
 
     obs_cfg = {
         "num_actions": int(robot_cfg.num_actions),
-        "ang_vel_scale": float(OmegaConf.select(robot_cfg, "ang_vel_scale", default=0.25)),
-        "dof_pos_scale": float(OmegaConf.select(robot_cfg, "dof_pos_scale", default=1.0)),
-        "dof_vel_scale": float(OmegaConf.select(robot_cfg, "dof_vel_scale", default=0.05)),
-        "ankle_idx": list(OmegaConf.select(robot_cfg, "ankle_idx", default=[4, 5, 10, 11])),
         "default_dof_pos": list(robot_cfg.default_angles),
+        "xml_path": str(sim2sim_xml),
+        "anchor_body_name": str(OmegaConf.select(robot_cfg, "anchor_body_name", default="torso_link")),
     }
-    obs_builder = TWIST2ObservationBuilder(obs_cfg)
+    obs_builder = MjlabObservationBuilder(obs_cfg)
 
     num_actions = int(robot_cfg.num_actions)
     kps = np.asarray(list(robot_cfg.kps), dtype=np.float32)
@@ -202,7 +201,7 @@ def render_pkl_sim2sim(
     video_frames: list[np.ndarray] = []
     t0 = time.time()
     last_action = np.zeros(num_actions, dtype=np.float32)
-    last_retarget_qpos = None
+    last_motion_joint_pos = None
     last_motion_idx = -1
 
     for step in range(num_policy_steps):
@@ -210,26 +209,21 @@ def render_pkl_sim2sim(
         motion_idx = min(int(policy_time * motion_fps), n_frames - 1)
 
         if motion_idx != last_motion_idx:
-            qpos = np.concatenate([
+            motion_qpos = np.concatenate([
                 root_pos[motion_idx],
                 root_rot[motion_idx],
                 dof_pos[motion_idx],
-            ])
+            ], dtype=np.float32)
             last_motion_idx = motion_idx
 
-        mimic_obs = extract_mimic_obs(
-            qpos=qpos, last_qpos=last_retarget_qpos, dt=1.0 / POLICY_HZ
-        )
+        motion_joint_pos = motion_qpos[7:7 + num_actions]
+        if last_motion_joint_pos is None:
+            motion_joint_vel = np.zeros((num_actions,), dtype=np.float32)
+        else:
+            motion_joint_vel = (motion_joint_pos - last_motion_joint_pos) * np.float32(POLICY_HZ)
 
         state = robot.get_state()
-        obs = obs_builder.build(state, mimic_obs, last_action)
-
-        expected_dim = getattr(controller, "_expected_obs_dim", None)
-        if isinstance(expected_dim, int) and expected_dim > 0 and obs.shape[0] != expected_dim:
-            if obs.shape[0] > expected_dim:
-                obs = obs[:expected_dim]
-            else:
-                obs = np.pad(obs, (0, expected_dim - obs.shape[0]))
+        obs = obs_builder.build(state, motion_qpos, motion_joint_vel, last_action)
 
         action = np.asarray(controller.compute_action(obs), dtype=np.float32).reshape(-1)
         target_dof_pos = controller.get_target_dof_pos(action)
@@ -244,7 +238,7 @@ def render_pkl_sim2sim(
             robot.step()
 
         last_action = action
-        last_retarget_qpos = qpos.copy()
+        last_motion_joint_pos = motion_joint_pos.copy()
 
         cam.lookat[:] = [data.qpos[0], data.qpos[1], 0.8]
         renderer.update_scene(data, camera=cam)
@@ -267,6 +261,7 @@ def render_pkl_sim2sim(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render retarget + sim2sim from TWIST2 .pkl motion files")
     parser.add_argument("--pkl", required=True, help="Path to .pkl motion file")
+    parser.add_argument("--policy", required=True, help="Path to ONNX policy exported from train_mimic checkpoint")
     parser.add_argument("--output_dir", default=None, help="Output directory (default: outputs/pkl_sim2sim/{stem}/)")
     parser.add_argument("--max_seconds", type=float, default=0, help="Max video duration (0=full)")
     parser.add_argument("--width", type=int, default=640)
@@ -282,6 +277,13 @@ def main() -> None:
         print(f"PKL file not found: {pkl_path}")
         sys.exit(1)
 
+    policy_path = Path(args.policy).expanduser()
+    if not policy_path.is_absolute():
+        policy_path = (project_root / policy_path).resolve()
+    if not policy_path.exists():
+        print(f"ONNX policy file not found: {policy_path}")
+        sys.exit(1)
+
     if args.output_dir:
         out_dir = Path(args.output_dir)
     else:
@@ -293,7 +295,7 @@ def main() -> None:
     render_pkl_retarget(pkl_path, out_dir / "retarget.mp4", args.width, args.height, args.max_seconds)
 
     print("\n--- Sim2Sim ---")
-    render_pkl_sim2sim(pkl_path, out_dir / "sim2sim.mp4", args.width, args.height, args.max_seconds)
+    render_pkl_sim2sim(pkl_path, policy_path, out_dir / "sim2sim.mp4", args.width, args.height, args.max_seconds)
 
     print(f"\nDone! Videos in: {out_dir}")
 

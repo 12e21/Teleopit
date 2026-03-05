@@ -7,7 +7,7 @@
 #   outputs/lafan1/{stem}/sim2sim.mp4
 #
 # Usage:
-#   bash scripts/render_all_lafan1.sh [--max_seconds 30]
+#   bash scripts/render_all_lafan1.sh --policy /path/to/policy.onnx [--max_seconds 30]
 #
 # Runs sequentially (GPU memory constraint). Skips already-rendered files.
 
@@ -19,6 +19,20 @@ DATA_DIR="$PROJECT_ROOT/data/lafan1"
 OUTPUT_DIR="$PROJECT_ROOT/outputs/lafan1"
 
 EXTRA_ARGS=("$@")
+
+HAS_POLICY=0
+for arg in "${EXTRA_ARGS[@]}"; do
+    if [[ "$arg" == "--policy" || "$arg" == --policy=* ]]; then
+        HAS_POLICY=1
+        break
+    fi
+done
+
+if [[ $HAS_POLICY -ne 1 ]]; then
+    echo "ERROR: --policy is required (ONNX exported from train_mimic checkpoint)."
+    echo "Usage: bash scripts/render_all_lafan1.sh --policy /path/to/policy.onnx [--max_seconds 30]"
+    exit 1
+fi
 
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 

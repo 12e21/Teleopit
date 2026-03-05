@@ -174,7 +174,7 @@ class TWIST2ObservationBuilder:
 
 
 # =========================================================================
-# MjlabObservationBuilder -- matches mjlab tracking environment (~189D)
+# MjlabObservationBuilder -- matches mjlab tracking environment (160D policy obs)
 # =========================================================================
 
 
@@ -221,43 +221,11 @@ def _quat_to_rot6d_np(q: FloatVec) -> FloatVec:
 class MjlabObservationBuilder:
     """Observation builder matching the mjlab tracking environment.
 
-    Produces ~189D observations from robot state and motion reference,
-    exactly matching the training-side observation structure.
-
-    Observation layout:
-        motion_anchor_pos_b  (3D) : motion target position in robot body frame
-        motion_anchor_ori_b  (6D) : motion target orientation in robot body frame
-        robot_anchor_ori_w   (6D) : robot orientation in world frame
-        robot_anchor_lin_vel_w (3D) : robot linear velocity
-        robot_anchor_ang_vel_w (3D) : robot angular velocity
-        robot_body_pos_b     (nb*3) : tracked body positions in anchor frame
-        robot_body_ori_b     (nb*6) : tracked body orientations in anchor frame
-        joint_pos_rel        (29D) : joint positions relative to default
-        joint_vel            (29D) : joint velocities
-        last_action          (29D) : previous action
+    Produces 160D policy observations consistent with mjlab TrackingEnv:
+    command(58) + motion_anchor_pos_b(3) + motion_anchor_ori_b(6) +
+    base_lin_vel(3) + base_ang_vel(3) + joint_pos_rel(29) +
+    joint_vel(29) + last_action(29).
     """
-
-    # Default tracked body names (9 bodies * 3 = 27D pos, 9 * 6 = 54D ori)
-    # Uses bodies available in g1_sim2sim_29dof.xml (inference model).
-    # head_mocap -> imu_in_torso (closest available in sim2sim model)
-    DEFAULT_TRACKING_BODIES: list[str] = [
-        "left_rubber_hand",
-        "right_rubber_hand",
-        "left_ankle_roll_link",
-        "right_ankle_roll_link",
-        "left_knee_link",
-        "right_knee_link",
-        "left_elbow_link",
-        "right_elbow_link",
-        "imu_in_torso",
-    ]
-
-    # Fallback mapping: if a body is missing, try these alternatives
-    _BODY_FALLBACKS: dict[str, str] = {
-        "head_mocap": "imu_in_torso",
-        "left_toe_link": "left_ankle_roll_link",
-        "right_toe_link": "right_ankle_roll_link",
-    }
 
     def __init__(self, cfg: ConfigType) -> None:
         self.num_actions: int = _as_int_scalar(_cfg_get(cfg, "num_actions"), "num_actions")
@@ -280,42 +248,29 @@ class MjlabObservationBuilder:
             name = self._mj_model.body(i).name
             self._body_name_to_idx[name] = i
 
-        # Tracked body indices
-        tracking_bodies = list(_cfg_get(cfg, "tracking_bodies")) if _cfg_get(cfg, "tracking_bodies") is not None else self.DEFAULT_TRACKING_BODIES
-        self._tracking_body_names = [str(b) for b in tracking_bodies]
-        self._tracking_body_ids: list[int] = []
-        for name in self._tracking_body_names:
-            if name in self._body_name_to_idx:
-                self._tracking_body_ids.append(self._body_name_to_idx[name])
-            elif name in self._BODY_FALLBACKS and self._BODY_FALLBACKS[name] in self._body_name_to_idx:
-                self._tracking_body_ids.append(self._body_name_to_idx[self._BODY_FALLBACKS[name]])
-            else:
-                raise ValueError(f"Body '{name}' not found in MuJoCo model. Available: {list(self._body_name_to_idx.keys())}")
-
         # Anchor body
         anchor_name = str(_cfg_get(cfg, "anchor_body_name")) if _cfg_get(cfg, "anchor_body_name") is not None else "torso_link"
         if anchor_name not in self._body_name_to_idx:
             raise ValueError(f"Anchor body '{anchor_name}' not found in model")
         self._anchor_body_id = self._body_name_to_idx[anchor_name]
 
-        nb = len(self._tracking_body_ids)
-        # 3 + 6 + 6 + 3 + 3 + nb*3 + nb*6 + 29 + 29 + 29
-        self.total_obs_size: int = 3 + 6 + 6 + 3 + 3 + nb * 3 + nb * 6 + self.num_actions * 3
+        # command(2*29) + 3 + 6 + 3 + 3 + joint_pos_rel(29) + joint_vel(29) + last_action(29)
+        self.total_obs_size: int = self.num_actions * 2 + 3 + 6 + 3 + 3 + self.num_actions * 3
 
     def reset(self) -> None:
         """Reset internal state."""
         pass
 
-    def _run_fk(self, joint_pos: FloatVec) -> None:
-        """Run forward kinematics with given joint positions."""
+    def _run_fk(self, base_pos: FloatVec, base_quat: FloatVec, joint_pos: FloatVec) -> None:
+        """Run forward kinematics with full floating-base qpos."""
         import mujoco
-        # Reset qpos, set joint values, run FK
         self._mj_data.qpos[:] = 0.0
-        # Floating base: qpos[0:3] = pos, qpos[3:7] = quat (wxyz in MuJoCo)
-        self._mj_data.qpos[2] = 0.76  # Default standing height
-        self._mj_data.qpos[3] = 1.0   # Identity quaternion w
+        self._mj_data.qpos[0:3] = np.asarray(base_pos, dtype=np.float64).reshape(3)
+        quat = np.asarray(base_quat, dtype=np.float64).reshape(4)
+        quat = quat / max(np.linalg.norm(quat), 1e-8)
+        self._mj_data.qpos[3:7] = quat
         n = min(len(joint_pos), self._mj_model.nq - 7)
-        self._mj_data.qpos[7:7 + n] = joint_pos[:n]
+        self._mj_data.qpos[7:7 + n] = np.asarray(joint_pos, dtype=np.float64)[:n]
         mujoco.mj_kinematics(self._mj_model, self._mj_data)
 
     def _get_body_pos(self, body_id: int) -> FloatVec:
@@ -330,95 +285,92 @@ class MjlabObservationBuilder:
     def build(
         self,
         robot_state: RobotState,
-        motion_anchor_pos_w: FloatVec,
-        motion_anchor_quat_w: FloatVec,
+        motion_qpos: FloatVec,
+        motion_joint_vel: FloatVec,
         last_action: FloatVec,
     ) -> FloatVec:
-        """Build observation vector (~189D).
+        """Build 160D policy observation aligned with mjlab training config.
 
         Args:
-            robot_state: Current robot state (qpos, qvel, quat wxyz, ang_vel)
-            motion_anchor_pos_w: Motion reference anchor position (3D)
-            motion_anchor_quat_w: Motion reference anchor quaternion (4D, wxyz)
+            robot_state: Current robot state.
+            motion_qpos: Retargeted motion qpos (7D root + 29D joints).
+            motion_joint_vel: Motion target joint velocities (29D).
             last_action: Previous action (29D)
-
-        Returns:
-            Observation vector (~189D)
         """
-        qpos = np.asarray(robot_state.qpos, dtype=np.float32)[:self.num_actions]
-        qvel = np.asarray(robot_state.qvel, dtype=np.float32)[:self.num_actions]
-        robot_quat = np.asarray(robot_state.quat, dtype=np.float32)  # wxyz
-        ang_vel = np.asarray(robot_state.ang_vel, dtype=np.float32)
-        motion_pos = np.asarray(motion_anchor_pos_w, dtype=np.float32)
-        motion_quat = np.asarray(motion_anchor_quat_w, dtype=np.float32)
+        qpos = np.asarray(robot_state.qpos, dtype=np.float32).reshape(-1)[:self.num_actions]
+        qvel = np.asarray(robot_state.qvel, dtype=np.float32).reshape(-1)[:self.num_actions]
+        robot_quat = np.asarray(robot_state.quat, dtype=np.float32).reshape(-1)
+        ang_vel = np.asarray(robot_state.ang_vel, dtype=np.float32).reshape(-1)
+        if robot_quat.shape[0] != 4:
+            raise ValueError(f"robot_state.quat must be 4D (wxyz), got {robot_quat.shape[0]}")
+        if ang_vel.shape[0] != 3:
+            raise ValueError(f"robot_state.ang_vel must be 3D, got {ang_vel.shape[0]}")
+        if robot_state.base_pos is None or robot_state.base_lin_vel is None:
+            raise ValueError(
+                "MjlabObservationBuilder requires robot_state.base_pos and robot_state.base_lin_vel. "
+                "Current RobotState does not provide them."
+            )
+        robot_base_pos = np.asarray(robot_state.base_pos, dtype=np.float32).reshape(-1)
+        base_lin_vel = np.asarray(robot_state.base_lin_vel, dtype=np.float32).reshape(-1)
+        if robot_base_pos.shape[0] != 3 or base_lin_vel.shape[0] != 3:
+            raise ValueError(
+                f"robot_state.base_pos/base_lin_vel must be 3D, got "
+                f"{robot_base_pos.shape[0]}/{base_lin_vel.shape[0]}"
+            )
+
+        motion = np.asarray(motion_qpos, dtype=np.float32).reshape(-1)
+        if motion.shape[0] < 7 + self.num_actions:
+            raise ValueError(
+                f"motion_qpos must contain 7D root + {self.num_actions}D joints, got {motion.shape[0]}"
+            )
+        motion_base_pos = motion[0:3]
+        motion_base_quat = motion[3:7]
+        motion_joint_pos = motion[7:7 + self.num_actions]
+        motion_joint_vel_vec = np.asarray(motion_joint_vel, dtype=np.float32).reshape(-1)[:self.num_actions]
+        if motion_joint_vel_vec.shape[0] != self.num_actions:
+            raise ValueError(
+                f"motion_joint_vel must be {self.num_actions}D, got {motion_joint_vel_vec.shape[0]}"
+            )
         last_act = np.asarray(last_action, dtype=np.float32)
+        if last_act.shape[0] != self.num_actions:
+            raise ValueError(f"last_action length must be {self.num_actions}, got {last_act.shape[0]}")
 
-        # Run FK to get body positions/orientations
-        self._run_fk(qpos)
+        # Robot anchor state from robot current qpos.
+        self._run_fk(robot_base_pos, robot_quat, qpos)
+        robot_anchor_pos = self._get_body_pos(self._anchor_body_id)
+        robot_anchor_quat = self._get_body_quat(self._anchor_body_id)
 
-        # Robot anchor state from FK
-        anchor_pos = self._get_body_pos(self._anchor_body_id)
-        anchor_quat = self._get_body_quat(self._anchor_body_id)
+        # Motion anchor state from retargeted motion qpos.
+        self._run_fk(motion_base_pos, motion_base_quat, motion_joint_pos)
+        motion_anchor_pos = self._get_body_pos(self._anchor_body_id)
+        motion_anchor_quat = self._get_body_quat(self._anchor_body_id)
 
-        # Use robot_state quat/ang_vel for anchor (more accurate with IMU)
-        anchor_quat = robot_quat
-        lin_vel = np.zeros(3, dtype=np.float32)  # Not available from robot_state directly
+        # command = target joint pos + target joint vel.
+        command = np.concatenate((motion_joint_pos, motion_joint_vel_vec), dtype=np.float32)
 
-        # 1. motion_anchor_pos_b: motion target in robot body frame (3D)
-        diff = motion_pos - anchor_pos
-        motion_anchor_pos_b = _quat_rotate_np(_quat_inv_np(anchor_quat), diff)
-
-        # 2. motion_anchor_ori_b: relative orientation (6D)
-        rel_quat = _quat_mul_np(_quat_inv_np(anchor_quat), motion_quat)
+        # motion anchor in robot-anchor frame.
+        diff = motion_anchor_pos - robot_anchor_pos
+        motion_anchor_pos_b = _quat_rotate_np(_quat_inv_np(robot_anchor_quat), diff)
+        rel_quat = _quat_mul_np(_quat_inv_np(robot_anchor_quat), motion_anchor_quat)
         motion_anchor_ori_b = _quat_to_rot6d_np(rel_quat)
 
-        # 3. robot_anchor_ori_w (6D)
-        robot_anchor_ori_w = _quat_to_rot6d_np(anchor_quat)
-
-        # 4. robot_anchor_lin_vel_w (3D)
-        robot_anchor_lin_vel_w = lin_vel
-
-        # 5. robot_anchor_ang_vel_w (3D)
-        robot_anchor_ang_vel_w = ang_vel
-
-        # 6. robot_body_pos_b: tracked bodies in anchor frame (nb*3)
-        body_pos_parts = []
-        for bid in self._tracking_body_ids:
-            bpos = self._get_body_pos(bid)
-            rel_pos = _quat_rotate_np(_quat_inv_np(anchor_quat), bpos - anchor_pos)
-            body_pos_parts.append(rel_pos)
-        robot_body_pos_b = np.concatenate(body_pos_parts, dtype=np.float32)
-
-        # 7. robot_body_ori_b: tracked bodies orientation in anchor frame (nb*6)
-        body_ori_parts = []
-        for bid in self._tracking_body_ids:
-            bquat = self._get_body_quat(bid)
-            rel_q = _quat_mul_np(_quat_inv_np(anchor_quat), bquat)
-            body_ori_parts.append(_quat_to_rot6d_np(rel_q))
-        robot_body_ori_b = np.concatenate(body_ori_parts, dtype=np.float32)
-
-        # 8. joint_pos_rel (29D)
+        # robot proprio.
         joint_pos_rel = qpos - self.default_dof_pos
-
-        # 9. joint_vel (29D)
         joint_vel_obs = qvel
-
-        # 10. last_action (29D)
-        last_action_obs = last_act
+        base_ang_vel = ang_vel
 
         obs = np.concatenate([
-            motion_anchor_pos_b,      # 3
-            motion_anchor_ori_b,      # 6
-            robot_anchor_ori_w,       # 6
-            robot_anchor_lin_vel_w,   # 3
-            robot_anchor_ang_vel_w,   # 3
-            robot_body_pos_b,         # nb*3
-            robot_body_ori_b,         # nb*6
-            joint_pos_rel,            # 29
-            joint_vel_obs,            # 29
-            last_action_obs,          # 29
+            command,              # 58
+            motion_anchor_pos_b,  # 3
+            motion_anchor_ori_b,  # 6
+            base_lin_vel,         # 3
+            base_ang_vel,         # 3
+            joint_pos_rel,        # 29
+            joint_vel_obs,        # 29
+            last_act,             # 29
         ], dtype=np.float32)
-
+        if obs.shape[0] != self.total_obs_size:
+            raise ValueError(f"Expected {self.total_obs_size}D mjlab observation, got {obs.shape[0]}")
         return obs
 
     def build_observation(
@@ -427,18 +379,7 @@ class MjlabObservationBuilder:
         history: list[FloatVec],
         action_mimic: FloatVec,
     ) -> FloatVec:
-        """Build observation compatible with ObservationBuilder protocol.
-
-        For MjlabObservationBuilder, action_mimic is interpreted as
-        [motion_anchor_pos_w(3), motion_anchor_quat_w(4)] = 7D.
-        """
-        if history:
-            last_action = _as_float_vec(history[-1], "history[-1]")
-        else:
-            last_action = np.zeros((self.num_actions,), dtype=np.float32)
-
-        mimic = _as_float_vec(action_mimic, "action_mimic")
-        motion_pos = mimic[:3]
-        motion_quat = mimic[3:7] if len(mimic) >= 7 else np.array([1, 0, 0, 0], dtype=np.float32)
-
-        return self.build(state, motion_pos, motion_quat, last_action)
+        raise ValueError(
+            "MjlabObservationBuilder requires full motion qpos and joint velocities. "
+            "Use build(robot_state, motion_qpos, motion_joint_vel, last_action)."
+        )

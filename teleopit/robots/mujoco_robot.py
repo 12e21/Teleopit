@@ -10,6 +10,34 @@ from omegaconf import DictConfig
 from teleopit.interfaces import RobotState
 
 
+def _quat_conjugate(quat_wxyz: np.ndarray) -> np.ndarray:
+    q = np.asarray(quat_wxyz, dtype=np.float64)
+    return np.array([q[0], -q[1], -q[2], -q[3]], dtype=np.float64)
+
+
+def _quat_multiply(a_wxyz: np.ndarray, b_wxyz: np.ndarray) -> np.ndarray:
+    aw, ax, ay, az = np.asarray(a_wxyz, dtype=np.float64)
+    bw, bx, by, bz = np.asarray(b_wxyz, dtype=np.float64)
+    return np.array(
+        [
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        ],
+        dtype=np.float64,
+    )
+
+
+def _quat_rotate_inverse(quat_wxyz: np.ndarray, vec_xyz: np.ndarray) -> np.ndarray:
+    q = np.asarray(quat_wxyz, dtype=np.float64)
+    v = np.asarray(vec_xyz, dtype=np.float64)
+    qn = q / max(np.linalg.norm(q), 1e-8)
+    q_inv = _quat_conjugate(qn)
+    v_quat = np.array([0.0, v[0], v[1], v[2]], dtype=np.float64)
+    return _quat_multiply(_quat_multiply(q_inv, v_quat), qn)[1:]
+
+
 class MuJoCoRobot:
     """MuJoCo-based robot simulation. Implements the Robot Protocol.
 
@@ -86,7 +114,10 @@ class MuJoCoRobot:
         n = self._num_actions
         dof_pos = self.data.qpos[7 : 7 + n].copy()
         dof_vel = self.data.qvel[6 : 6 + n].copy()
+        base_pos = self.data.qpos[0:3].copy()
         quat = self.data.qpos[3:7].copy()
+        base_lin_vel_w = self.data.qvel[0:3].copy()
+        base_lin_vel_b = _quat_rotate_inverse(quat, base_lin_vel_w).astype(np.float64, copy=False)
         ang_vel = self.data.qvel[3:6].copy()
         return RobotState(
             qpos=dof_pos,
@@ -94,6 +125,8 @@ class MuJoCoRobot:
             quat=quat,
             ang_vel=ang_vel,
             timestamp=float(self.data.time),
+            base_pos=base_pos,
+            base_lin_vel=base_lin_vel_b,
         )
 
     def apply_torque(self, torque: np.ndarray) -> None:

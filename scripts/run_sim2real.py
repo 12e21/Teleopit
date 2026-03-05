@@ -16,8 +16,23 @@ from omegaconf import DictConfig
 from teleopit.sim2real.controller import Sim2RealController
 
 
+def _validate_policy_path(cfg: DictConfig, script_name: str) -> None:
+    policy_path = str(cfg.controller.get("policy_path", "")).strip()
+    if not policy_path:
+        raise ValueError(
+            "controller.policy_path is required and must point to ONNX exported from train_mimic checkpoint.\n"
+            f"Example: python scripts/{script_name} controller.policy_path=policy.onnx"
+        )
+    resolved = Path(policy_path).expanduser()
+    if not resolved.is_absolute():
+        resolved = (Path.cwd() / resolved).resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"ONNX policy file not found: {resolved}")
+
+
 @hydra.main(version_base=None, config_path="../teleopit/configs", config_name="sim2real")
 def main(cfg: DictConfig) -> None:
+    _validate_policy_path(cfg, "run_sim2real.py")
     controller = Sim2RealController(cfg)
     try:
         controller.run()

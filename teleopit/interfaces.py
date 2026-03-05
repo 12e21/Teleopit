@@ -14,6 +14,8 @@ class RobotState:
     quat: np.ndarray  # Base orientation quaternion
     ang_vel: np.ndarray  # Base angular velocity
     timestamp: float  # Timestamp in seconds
+    base_pos: np.ndarray | None = None  # Base position in world frame
+    base_lin_vel: np.ndarray | None = None  # Base linear velocity in body frame
 
 
 @runtime_checkable

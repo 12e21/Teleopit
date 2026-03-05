@@ -209,7 +209,7 @@ python train_mimic/scripts/play.py \
 使用导出的 ONNX 模型进行遥操推理（MuJoCo 仿真）：
 
 ```bash
-python scripts/run_sim.py controller.policy_path=policy.onnx robot.obs_builder=mjlab
+python scripts/run_sim.py controller.policy_path=policy.onnx
 ```
 
 ## 训练配置
@@ -227,7 +227,7 @@ python scripts/run_sim.py controller.policy_path=policy.onnx robot.obs_builder=m
 
 - 标准 rsl_rl `ActorCritic` MLP
 - Actor 网络：[512, 256, 128]，ELU 激活
-- 观测维度：~189D（anchor-relative body poses + 关节状态）
+- 观测维度：160D（与 mjlab TrackingEnv policy 观测一致）
 - 动作维度：29D（关节位置目标）
 - Empirical normalization（替代自定义 Normalizer）
 
@@ -444,7 +444,7 @@ benchmark 脚本会输出：
 | 仿真引擎 | PhysX / USD | MuJoCo Warp |
 | 环境 API | DirectRLEnv + 自定义 runner | ManagerBasedRlEnvCfg + 标准 rsl_rl |
 | 网络架构 | Conv1d motion encoder + MLP | 标准 MLP |
-| 观测维度 | 10098D (含 9120D motion history) | ~189D |
+| 观测维度 | 10098D (含 9120D motion history) | 160D |
 | 运动数据 | PKL (自定义 MotionLib) | NPZ (mjlab MotionCommand) |
 | Normalization | 自定义 Normalizer | rsl_rl empirical normalization |
 | ONNX 导出 | HardwareStudentFutureNN wrapper | 标准 MLP + 内嵌 normalization |
