@@ -9,26 +9,34 @@ PKL fields:
     root_pos     : (T, 3) float64
     root_rot     : (T, 4) float64  xyzw quaternion
     dof_pos      : (T, 29) float64
-    local_body_pos : (T, 38, 3) float32  body positions in root frame
+    local_body_pos : (T, 38, 3) float32  body positions in root's LOCAL frame
     link_body_list : list[str] of 38 body names
 
-NPZ fields:
+NPZ fields (30 bodies in mjlab G1 robot body order):
     fps          : int scalar
     joint_pos    : (T, 29) float32
     joint_vel    : (T, 29) float32  (finite-difference)
-    body_pos_w   : (T, nb, 3) float32  world-frame body positions
-    body_quat_w  : (T, nb, 4) float32  wxyz quaternion
-    body_lin_vel_w : (T, nb, 3) float32
-    body_ang_vel_w : (T, nb, 3) float32
-    body_names   : list[str]  names of the nb bodies
+    body_pos_w   : (T, 30, 3) float32  world-frame body positions
+    body_quat_w  : (T, 30, 4) float32  wxyz quaternion
+    body_lin_vel_w : (T, 30, 3) float32
+    body_ang_vel_w : (T, 30, 3) float32
+    body_names   : list[str]  30 body names in mjlab G1 robot order
+
+IMPORTANT: NPZ body ordering must match mjlab G1 robot body ordering because
+mjlab's MotionLoader uses robot body indices to index into body_pos_w.
 
 Usage:
     # Convert a single file
     python convert_pkl_to_npz.py --input path/to/file.pkl --output path/to/file.npz
 
     # Batch convert a directory
-    python convert_pkl_to_npz.py --input data/twist2_retarget_pkl/OMOMO_g1_GMR \
+    python convert_pkl_to_npz.py --input data/twist2_retarget_pkl/OMOMO_g1_GMR \\
                                   --output data/twist2_retarget_npz/OMOMO_g1_GMR
+
+    # Batch convert + merge into single file (recommended for training)
+    python convert_pkl_to_npz.py --input data/twist2_retarget_pkl/OMOMO_g1_GMR \\
+                                  --output data/twist2_retarget_npz/OMOMO_g1_GMR \\
+                                  --merge
 """
 
 from __future__ import annotations
@@ -39,6 +47,23 @@ import pickle
 from pathlib import Path
 
 import numpy as np
+
+
+# mjlab G1 robot body ordering (matches robot.body_names from G1_ROBOT_CFG).
+# mjlab's MotionLoader uses robot body indices to index into NPZ body_pos_w,
+# so NPZ body ordering MUST match this list exactly.
+_MJLAB_G1_BODY_NAMES = [
+    "pelvis",
+    "left_hip_pitch_link", "left_hip_roll_link", "left_hip_yaw_link",
+    "left_knee_link", "left_ankle_pitch_link", "left_ankle_roll_link",
+    "right_hip_pitch_link", "right_hip_roll_link", "right_hip_yaw_link",
+    "right_knee_link", "right_ankle_pitch_link", "right_ankle_roll_link",
+    "waist_yaw_link", "waist_roll_link", "torso_link",
+    "left_shoulder_pitch_link", "left_shoulder_roll_link", "left_shoulder_yaw_link",
+    "left_elbow_link", "left_wrist_roll_link", "left_wrist_pitch_link", "left_wrist_yaw_link",
+    "right_shoulder_pitch_link", "right_shoulder_roll_link", "right_shoulder_yaw_link",
+    "right_elbow_link", "right_wrist_roll_link", "right_wrist_pitch_link", "right_wrist_yaw_link",
+]
 
 
 def quat_xyzw_to_wxyz(q: np.ndarray) -> np.ndarray:
@@ -133,13 +158,19 @@ def convert_pkl_to_npz(pkl_path: str, npz_path: str) -> None:
     # Convert root quaternion: xyzw -> wxyz
     root_rot_wxyz = quat_xyzw_to_wxyz(root_rot_xyzw)  # (T, 4)
 
-    # Body positions in world frame: local_body_pos is relative to root
-    body_pos_w = local_body_pos + root_pos[:, None, :]  # (T, nb, 3)
+    # Body positions in world frame: local_body_pos is in root's local frame,
+    # need to rotate by root quaternion then translate
+    # body_pos_w[t,i] = root_pos[t] + R(root_rot[t]) @ local_body_pos[t,i]
+    # Vectorized: expand root_rot_wxyz to (T, nb, 4) and rotate all bodies at once
+    root_rot_expanded = np.broadcast_to(root_rot_wxyz[:, None, :], (T, nb, 4)).reshape(T * nb, 4)
+    local_body_pos_flat = local_body_pos.reshape(T * nb, 3)
+    body_pos_w = root_pos[:, None, :] + quat_rotate(root_rot_expanded, local_body_pos_flat).reshape(T, nb, 3)
 
     # Body quaternions in world frame
-    # For simplicity, assign root orientation to all bodies since PKL
-    # doesn't store per-body orientations. The MotionCommand will use
-    # body positions as primary tracking targets.
+    # NOTE: PKL doesn't store per-body orientations. We use root orientation
+    # for all bodies as an approximation. This is acceptable since mjlab's
+    # tracking primarily focuses on body positions (higher reward weight).
+    # For precise orientation tracking, use MuJoCo FK from joint angles.
     body_quat_w = np.tile(root_rot_wxyz[:, None, :], (1, nb, 1))  # (T, nb, 4)
 
     # Body linear velocities via finite difference
@@ -153,6 +184,15 @@ def convert_pkl_to_npz(pkl_path: str, npz_path: str) -> None:
     norms = np.where(norms < 1e-8, 1.0, norms)
     body_quat_w = body_quat_w / norms
 
+    # Reorder bodies to match mjlab G1 robot body ordering.
+    # MotionLoader uses robot body indices to index into body_pos_w, so the
+    # NPZ body ordering must exactly match the mjlab G1 robot body list.
+    pkl_to_mjlab_idx = [body_names.index(n) for n in _MJLAB_G1_BODY_NAMES]
+    body_pos_w = body_pos_w[:, pkl_to_mjlab_idx]
+    body_quat_w = body_quat_w[:, pkl_to_mjlab_idx]
+    body_lin_vel_w = body_lin_vel_w[:, pkl_to_mjlab_idx]
+    body_ang_vel_w = body_ang_vel_w[:, pkl_to_mjlab_idx]
+
     # Save
     os.makedirs(os.path.dirname(npz_path) or ".", exist_ok=True)
     np.savez(
@@ -164,7 +204,7 @@ def convert_pkl_to_npz(pkl_path: str, npz_path: str) -> None:
         body_quat_w=body_quat_w.astype(np.float32),
         body_lin_vel_w=body_lin_vel_w,
         body_ang_vel_w=body_ang_vel_w,
-        body_names=np.array(body_names, dtype=str),
+        body_names=np.array(_MJLAB_G1_BODY_NAMES, dtype=str),
     )
 
 
@@ -178,7 +218,7 @@ def merge_npz_dir(npz_dir: str, output_path: str) -> None:
         npz_dir: Directory containing .npz files (searched recursively)
         output_path: Output merged .npz file path
     """
-    npz_files = sorted(Path(npz_dir).rglob("*.npz"))
+    npz_files = sorted(f for f in Path(npz_dir).rglob("*.npz") if f.name != "merged.npz")
     if not npz_files:
         print(f"No NPZ files found in {npz_dir}")
         raise SystemExit(1)

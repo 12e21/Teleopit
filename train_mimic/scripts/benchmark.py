@@ -76,7 +76,7 @@ def main() -> int:
     policy = runner.get_inference_policy(device=device)
 
     # Benchmark
-    obs, _ = env.get_observations()
+    obs = env.get_observations()
     unwrapped = env.unwrapped
 
     cmd = unwrapped.command_manager.get_term("motion")
@@ -89,7 +89,7 @@ def main() -> int:
     for step in range(max_steps):
         with torch.no_grad():
             actions = policy(obs)
-        obs, _, dones, _, _ = env.step(actions)
+        obs, _, dones, _ = env.step(actions)
 
         # Compute errors
         pos_err = torch.norm(cmd.anchor_pos_w - cmd.robot_anchor_pos_w, dim=-1).mean().item()

@@ -105,11 +105,11 @@ def main() -> None:
 
     if args.video:
         # Run a fixed number of steps then close
-        obs, _ = env.get_observations()
+        obs = env.get_observations()
         for _ in range(500):
             with torch.no_grad():
                 actions = policy(obs)
-            obs, _, _, _, _ = env.step(actions)
+            obs, _, _, _ = env.step(actions)
     elif args.viewer == "native":
         NativeMujocoViewer(env, policy).run()
     else:

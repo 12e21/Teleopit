@@ -310,6 +310,7 @@ python scripts/run_sim.py controller.policy_path=policy.onnx robot.obs_builder=m
 python train_mimic/scripts/benchmark.py \
     --task Tracking-Flat-G1-v0 \
     --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
+    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
     --num_envs 1
 ```
 
@@ -321,6 +322,12 @@ benchmark 脚本计算 3 个核心跟踪误差：
 - **body_position_error**: 关键 body 位置平均误差（9 个部位）
 
 结果保存到 `benchmark_results/{task}-{checkpoint}.txt`。
+
+## Troubleshooting
+
+常见问题请参考 [训练问题排查文档](training_troubleshooting.md)。
+
+---
 
 ## 与旧系统的对比
 
