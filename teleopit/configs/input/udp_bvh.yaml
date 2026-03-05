@@ -1,5 +1,5 @@
 provider: udp_bvh
-reference_bvh: "data/hc_mocap/wander.bvh"
+reference_bvh: "data/hc_mocap_bvh/1.bvh"
 bvh_format: hc_mocap
 human_format: bvh_hc_mocap
 robot_name: unitree_g1

@@ -62,6 +62,10 @@ venv.bak/
 *.h5
 *.onnx
 data/
+!scripts/data/
+!scripts/data/*.py
+!train_mimic/data/
+!train_mimic/data/*.py
 outputs/
 benchmark_results/
 logs/

@@ -50,6 +50,37 @@ python -c "import train_mimic.tasks; print('training OK')"
 
 ## 运动数据准备
 
+### 推荐：使用 Manifest 数据系统
+
+为支持后续持续扩容（scale up）并保证可复现，推荐使用 `manifest + validate + build` 三步流程管理训练数据。  
+详细说明见 [数据系统文档](dataset.md)。
+
+快速示例：
+
+```bash
+# 1) 从旧 NPZ 目录生成 manifest（v1）
+python scripts/data/migrate_legacy_dataset.py \
+    --input_npz_dir data/twist2_retarget_npz/OMOMO_g1_GMR \
+    --output_manifest data/motion/manifests/v1.csv \
+    --npz_root .
+
+# 2) 校验 manifest 与 clip 质量
+python scripts/data/validate_dataset.py \
+    --manifest data/motion/manifests/v1.csv \
+    --npz_root .
+
+# 3) 构建 train/val merged 产物
+python scripts/data/build_dataset.py \
+    --manifest data/motion/manifests/v1.csv \
+    --dataset_version v1 \
+    --npz_root . \
+    --build_root data/motion/builds
+```
+
+构建完成后，训练/评估分别使用：
+- `data/motion/builds/v1/merged_train.npz`
+- `data/motion/builds/v1/merged_val.npz`
+
 ### PKL → NPZ 转换
 
 训练使用 NPZ 格式的运动数据。mjlab 的 `MotionLoader` 要求**单个 NPZ 文件**，需要把多个片段合并。
@@ -110,7 +141,7 @@ python train_mimic/scripts/convert_pkl_to_npz.py \
 # 默认使用 tensorboard 日志（不需要 wandb）
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --num_envs 64 --max_iterations 100 \
-    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz
+    --motion_file data/motion/builds/v1/merged_train.npz
 ```
 
 ### 完整训练
@@ -119,12 +150,12 @@ python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
 # Tensorboard 日志（默认）
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --num_envs 4096 --max_iterations 30000 \
-    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz
+    --motion_file data/motion/builds/v1/merged_train.npz
 
 # 启用 wandb 日志（需要 wandb 账号）
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --num_envs 4096 --max_iterations 30000 \
-    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
+    --motion_file data/motion/builds/v1/merged_train.npz \
     --wandb_project teleopit
 ```
 
@@ -148,15 +179,16 @@ tensorboard --logdir logs/rsl_rl/g1_tracking
 | `--device` | `cuda:0` | 训练设备 |
 
 ```bash
-# 使用 AMASS 数据集
+# 使用其他版本数据集（例如 v2）
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
-    --motion_file data/twist2_retarget_npz/AMASS_g1_GMR8/merged.npz \
+    --motion_file data/motion/builds/v2/merged_train.npz \
     --num_envs 4096 --max_iterations 30000
 
 # 从 checkpoint 恢复
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --resume logs/rsl_rl/g1_tracking/2026-.../model_10000.pt \
-    --max_iterations 30000
+    --max_iterations 30000 \
+    --motion_file data/motion/builds/v1/merged_train.npz
 ```
 
 Checkpoint 保存在 `logs/rsl_rl/g1_tracking/{run_name}/` 目录下。
@@ -189,18 +221,18 @@ mjlab 提供两种 viewer：
 # Native window（需要显示器）
 python train_mimic/scripts/play.py \
     --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
-    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz
+    --motion_file data/motion/builds/v1/merged_val.npz
 
 # 浏览器 viewer（SSH 时推荐，加 --viewer viser 后访问 localhost:8012）
 python train_mimic/scripts/play.py \
     --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
-    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
+    --motion_file data/motion/builds/v1/merged_val.npz \
     --viewer viser
 
 # 录制视频（保存到 checkpoint 目录的 videos/play/）
 python train_mimic/scripts/play.py \
     --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
-    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
+    --motion_file data/motion/builds/v1/merged_val.npz \
     --video
 ```
 
@@ -397,7 +429,7 @@ python scripts/run_sim.py controller.policy_path=policy.onnx
 python train_mimic/scripts/benchmark.py \
     --task Tracking-Flat-G1-v0 \
     --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
-    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
+    --motion_file data/motion/builds/v1/merged_val.npz \
     --num_envs 1 \
     --num_eval_steps 2000 \
     --warmup_steps 100
@@ -409,7 +441,7 @@ python train_mimic/scripts/benchmark.py \
 MUJOCO_GL=egl python train_mimic/scripts/benchmark.py \
     --task Tracking-Flat-G1-v0 \
     --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
-    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
+    --motion_file data/motion/builds/v1/merged_val.npz \
     --num_envs 1 \
     --video \
     --video_length 600 \
