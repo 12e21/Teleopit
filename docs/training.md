@@ -302,6 +302,93 @@ python scripts/run_sim.py controller.policy_path=policy.onnx robot.obs_builder=m
 迭代 5000-30000: 两者趋于收敛
 ```
 
+## 训练日志解读
+
+下面按 `train.py` 控制台日志字段分组说明“含义、经验正常值、趋势”。
+注意：不同数据集/动作难度会导致绝对值不同，优先看趋势。
+
+### 1) 训练吞吐与耗时
+
+| 字段 | 含义 | 正常值（经验） | 期望趋势 |
+|------|------|------------------|----------|
+| `Learning iteration` | 当前迭代/总迭代 | 单调递增 | 按计划推进到目标迭代 |
+| `Total steps` | 累积环境步数 | 单调递增 | 持续增长 |
+| `Steps per second` | 训练吞吐（env step/s） | 与机器相关；稳定比绝对值更重要 | 波动小、长期稳定 |
+| `Collection time` | 采样耗时 | 通常明显大于学习耗时 | 稳定 |
+| `Learning time` | 反向传播耗时 | 通常小于采样耗时 | 稳定 |
+| `Iteration time` | 单轮总耗时 | `Collection + Learning` 附近 | 稳定 |
+| `ETA` | 剩余训练时间估计 | 参考值 | 随迭代推进逐步下降 |
+
+### 2) PPO 优化信号
+
+| 字段 | 含义 | 正常值（经验） | 期望趋势 |
+|------|------|------------------|----------|
+| `Mean value loss` | value function 拟合误差 | 常见在 `0.1 ~ 5`，偶发抖动正常 | 中后期下降并趋稳 |
+| `Mean surrogate loss` | PPO 策略目标（带符号） | 小幅负值常见（如 `-0.03 ~ 0`） | 绝对值逐步减小、趋稳 |
+| `Mean entropy loss` | 熵正则项（日志名含 loss） | 通常为正且随 std 变化 | 前期较高，后期缓降 |
+| `Mean action std` | 动作分布标准差（探索强度） | 常见 `0.3 ~ 1.0` | 训练推进时缓慢下降 |
+
+异常信号：
+- `value loss` 长时间爆高（如持续 >10）且不回落，常见于学习率过高或奖励尺度异常。
+- `action std` 很快塌到极小值（接近 0），常见于过早收敛、探索不足。
+
+### 3) Episode 总体质量
+
+| 字段 | 含义 | 正常值（经验） | 期望趋势 |
+|------|------|------------------|----------|
+| `Mean reward` | 每回合总回报 | 可能为负（惩罚项存在） | 中后期上升或至少不持续恶化 |
+| `Mean episode length` | 平均存活步数 | 初期常很低（1~3） | 持续上升（最关键） |
+
+`Mean reward` 在早期可能下降，但如果 `Mean episode length` 稳步上升，通常仍是正向训练。
+
+### 4) `Episode_Reward/*` 子项
+
+判读规则：
+- `motion_*`（追踪奖励）为正，越高越好。
+- `action_rate_l2/joint_limit/self_collisions`（惩罚）为负，越接近 0 越好。
+
+建议关注组合趋势：
+- `motion_body_pos` 上升 + `Metrics/motion/error_body_pos` 下降，说明姿态跟踪在变好。
+- `self_collisions` 长期偏负且不改善，通常要查碰撞体或动作过激。
+
+### 5) `Metrics/motion/*` 误差项
+
+这些是“越小越好”的直接 tracking error（单位随字段而定，位置通常是米，旋转通常是弧度）。
+
+| 字段 | 含义 | 经验目标（中后期） | 期望趋势 |
+|------|------|---------------------|----------|
+| `error_anchor_pos` | 根位置误差 | 尽量 < `0.25`（终止阈值附近） | 下降 |
+| `error_anchor_rot` | 根朝向误差 | 常见目标 < `0.6` rad | 下降 |
+| `error_body_pos` | 关键 body 位置误差 | 常见目标 < `0.2` m | 下降 |
+| `error_body_rot` | 关键 body 朝向误差 | 常见目标 < `1.0` rad | 下降 |
+| `error_joint_pos` | 关节角误差 | 与动作集相关，重点看下降趋势 | 下降 |
+| `error_joint_vel` | 关节速度误差 | 与动作激烈程度强相关 | 下降 |
+| `error_*_lin_vel` | 线速度误差 | 动作快时会偏大 | 下降或稳定 |
+| `error_*_ang_vel` | 角速度误差 | 动作快时会偏大 | 下降或稳定 |
+
+采样相关：
+- `sampling_entropy`：采样分布熵，过低可能表示采样过于集中。
+- `sampling_top1_prob`：最高概率 bin 的占比，过高可能表示覆盖不足。
+- `sampling_top1_bin`：当前最常采样的 bin（用于观察采样偏置）。
+
+### 6) `Episode_Termination/*` 终止原因
+
+判读规则：
+- `time_out`：越高越好（说明更多回合是“活到时限”结束）。
+- 其他失败原因（`anchor_pos`, `anchor_ori`, `ee_body_pos`）：越低越好。
+
+注意：不同 logger 归一化方式下，这些值不一定严格是 `[0,1]` 概率（可能是每回合平均触发次数或加权统计），所以以相对变化趋势判断更稳妥。
+
+### 7) 对示例日志的快速解读
+
+对于你给的这条 `iteration 967` 示例：
+- `Mean episode length = 13.72`：已明显高于起步期，训练在推进。
+- `error_anchor_pos = 0.246`：接近 `0.25` 终止边界，根位置稳定性仍是主要瓶颈。
+- `Episode_Termination/ee_body_pos = 16.7083`：末端 body 位置误差触发较多，手脚关键点跟踪还不稳。
+- `action_rate_l2/joint_limit/self_collisions` 接近 0：正则惩罚总体可控，不是当前主矛盾。
+
+结论：优先继续压低 `anchor_pos` 与 `ee_body_pos` 相关误差，而不是先调正则项。
+
 ## 评估
 
 使用 benchmark 脚本评估训练好的策略：
