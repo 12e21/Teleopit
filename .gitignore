@@ -63,6 +63,7 @@ venv.bak/
 *.onnx
 data/
 outputs/
+benchmark_results/
 logs/
 wandb/
 *.log
