@@ -64,6 +64,7 @@ venv.bak/
 data/
 outputs/
 logs/
+wandb/
 *.log
 # Training - downloaded reference assets (re-downloadable)
 train_mimic/assets/g1/usd/configuration/
