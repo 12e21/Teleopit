@@ -398,17 +398,38 @@ python train_mimic/scripts/benchmark.py \
     --task Tracking-Flat-G1-v0 \
     --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
     --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
-    --num_envs 1
+    --num_envs 1 \
+    --num_eval_steps 2000 \
+    --warmup_steps 100
+```
+
+可选：录制评估视频（用于直观观察动作质量）：
+
+```bash
+MUJOCO_GL=egl python train_mimic/scripts/benchmark.py \
+    --task Tracking-Flat-G1-v0 \
+    --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
+    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
+    --num_envs 1 \
+    --video \
+    --video_length 600 \
+    --video_folder benchmark_results/videos
 ```
 
 ### 跟踪误差
 
-benchmark 脚本计算 3 个核心跟踪误差：
-- **anchor_position_error**: 根位置平均误差
-- **anchor_orientation_error**: 根朝向平均误差（四元数角度）
-- **body_position_error**: 关键 body 位置平均误差（9 个部位）
+benchmark 脚本会输出：
+- `total_error(anchor_pos+anchor_rot+body_pos)`：主对比指标（越小越好）
+- `error_anchor_pos`：根位置误差（越小越好）
+- `error_anchor_rot`：根朝向误差（越小越好）
+- `error_body_pos`：关键 body 位置误差（越小越好）
+- `error_anchor_lin_vel / error_body_rot / error_joint_pos / error_joint_vel` 等分布统计（`mean/std/p50/p95/min/max`）
+- `mean_step_reward`：每步平均奖励（越高越好）
+- `done_rate`, `timeout_rate`, `completed_episodes`, `mean_episode_length`（稳定性指标）
 
-结果保存到 `benchmark_results/{task}-{checkpoint}.txt`。
+结果保存到：
+- `benchmark_results/{task}-{checkpoint}.txt`（人类可读摘要）
+- `benchmark_results/{task}-{checkpoint}.json`（完整指标，便于后处理）
 
 ## Troubleshooting
 

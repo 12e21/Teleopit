@@ -260,6 +260,85 @@ python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
 
 ---
 
+## 问题 4：benchmark 视频异常（只有 1 帧 / 保存失败 / EGL 报错）
+
+### 现象 A：视频只有 1 帧
+
+常见原因：
+1. 命令里设置了 `--video_length 1`
+2. `--num_eval_steps` 太小
+
+`benchmark.py` 的实际录制长度是：
+
+```text
+actual_video_length = min(video_length, num_eval_steps)
+```
+
+#### 解决方案
+
+确保 `num_eval_steps >= video_length`，例如：
+
+```bash
+python train_mimic/scripts/benchmark.py \
+    --task Tracking-Flat-G1-v0 \
+    --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
+    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
+    --num_envs 1 \
+    --num_eval_steps 2000 \
+    --warmup_steps 100 \
+    --video \
+    --video_length 600 \
+    --video_folder benchmark_results/videos/model_30000_eval
+```
+
+### 现象 B：报错 `indices should be either on cpu or on the same device`
+
+示例报错：
+
+```text
+RuntimeError: indices should be either on cpu or on the same device as the indexed tensor (cpu)
+```
+
+这是旧版 `benchmark.py` 的设备不一致问题（`done_mask` 在 GPU，长度 buffer 在 CPU）。
+
+#### 解决方案
+
+更新到最新代码后重试。修复版本已将 episode 长度 buffer 放到和 rollout 相同设备，并在收集日志时转回 CPU。
+
+### 现象 C：警告 `Unable to save last video! Did you call close()?`
+
+该警告通常表示评估过程中发生异常，`RecordVideo` 没有机会正常 `close()`，导致视频收尾失败。
+
+#### 解决方案
+
+1. 先修复导致中断的首个异常（通常是设备或渲染后端问题）
+2. 使用最新 `benchmark.py`（已在主循环异常时保证 `env.close()`）
+3. 重新运行评估
+
+### 现象 D：EGL/OpenGL 后端报错
+
+常见日志：
+- `libEGL warning: failed to open /dev/dri/renderD128: Permission denied`
+- `Video renderer initialization failed...`
+
+#### 根因
+
+当前用户对 GPU render 节点无权限，或机器上缺少可用 EGL/GL 后端库。
+
+#### 解决方案
+
+1. 优先用 EGL（无头机器推荐）：
+   ```bash
+   MUJOCO_GL=egl PYOPENGL_PLATFORM=egl python train_mimic/scripts/benchmark.py ... --video
+   ```
+2. 检查 `/dev/dri/renderD*` 权限与用户组（通常需加入 `video`/`render` 组并重新登录）
+3. 若机器无可用 GPU EGL，可尝试 CPU 渲染后端：
+   ```bash
+   MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa python train_mimic/scripts/benchmark.py ... --video
+   ```
+
+---
+
 ## 其他问题
 
 如遇到其他问题，请在 [GitHub Issues](https://github.com/your-repo/issues) 提交，附上：
