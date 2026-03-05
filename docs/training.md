@@ -6,9 +6,16 @@
 
 ### 前置要求
 
-- Python 3.10（推荐）或 3.11+
+- Python 3.10
   - **注意**：`cyclonedds==0.10.2`（sim2real 依赖）在 Python 3.10 有预编译 wheel，3.11 需要手动编译 CycloneDDS C 库
 - NVIDIA GPU（CUDA 支持）
+
+### 依赖版本说明
+
+训练框架使用 **rsl_rl_lib 5.x**（当前验证版本：`5.0.1`）。rsl_rl 5.x 对观测配置的 API 做了调整：
+
+- `obs_groups` 中的 actor 观测 key 从 `"policy"` 改为 `"actor"`
+- `train_mimic/scripts/train.py` 的 `_to_rsl_rl5_cfg()` 已处理此兼容性转换，旧版 mjlab 配置（使用 `"policy"` key）可正常工作
 
 ### 安装步骤
 

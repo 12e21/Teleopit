@@ -63,6 +63,58 @@ Unresolved reference prim path .../visuals/head_mocap
 
 这是 USD 中视觉网格引用的警告，不影响物理仿真和训练。仅在需要渲染时才需要修复。
 
+## 训练进程被 killed（OOM）
+
+### 症状
+
+训练启动后在场景初始化阶段（Scene manager 创建后）进程被直接终止，终端显示：
+
+```
+[INFO]: Scene manager: <mjlab.scene.scene.Scene object at 0x...>
+[1]    XXXXX killed     python train_mimic/scripts/train.py ...
+```
+
+无 Python 异常堆栈，进程退出码为非零。
+
+### 根因
+
+容器/cgroup 对内存有上限限制（如 100 GiB），而系统已用内存接近该上限。使用 `--num_envs 4096` 时，场景初始化需要大量内存，触发 OOM killer。
+
+诊断命令：
+
+```bash
+# 查看 cgroup 内存上限
+cat /sys/fs/cgroup/memory/memory.limit_in_bytes
+# 查看当前内存使用
+free -h
+```
+
+若 cgroup 上限（如 107374182400 = 100 GiB）与当前已用内存之差不足几 GB，则可确认是此问题。
+
+### 解决方案
+
+**方案一：减小并行环境数**（推荐，无需额外权限）
+
+```bash
+# 先用小规模验证可以跑起来
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
+    --num_envs 64 --max_iterations 100 \
+    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz
+
+# 确认后再根据可用内存调整到合适规模（如 512 或 1024）
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
+    --num_envs 1024 --max_iterations 30000 \
+    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz
+```
+
+**方案二：释放系统 page cache**（需要 root 权限）
+
+```bash
+sync && echo 3 > /proc/sys/vm/drop_caches
+```
+
+执行后 buff/cache 会释放，再以 `--num_envs 4096` 重新训练。
+
 ## wandb 相关
 
 ### wandb 未初始化

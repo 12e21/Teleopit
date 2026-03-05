@@ -67,6 +67,9 @@ def _to_rsl_rl5_cfg(cfg: dict) -> dict:
     expects separate "actor" and "critic" keys with MLPModel config.
     """
     policy = cfg.pop("policy")
+    if "policy" in cfg.get("obs_groups", {}):
+        cfg["obs_groups"]["actor"] = cfg["obs_groups"].pop("policy")
+
     cfg["actor"] = {
         "class_name": "rsl_rl.models.MLPModel",
         "hidden_dims": policy["actor_hidden_dims"],
