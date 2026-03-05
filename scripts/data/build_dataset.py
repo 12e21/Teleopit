@@ -54,6 +54,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip pre-build validation (not recommended)",
     )
+    parser.add_argument(
+        "--target_fps",
+        type=int,
+        default=0,
+        help=(
+            "Optional target fps for merge. 0 means disabled (strict same-fps required). "
+            "When >0, clips are time-resampled to this fps before merge."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -61,6 +70,9 @@ def main() -> int:
     args = parse_args()
     if args.val_percent <= 0 or args.val_percent >= 100:
         raise ValueError("--val_percent must be between 1 and 99")
+    if args.target_fps < 0:
+        raise ValueError("--target_fps must be >= 0")
+    target_fps = args.target_fps if args.target_fps > 0 else None
 
     manifest_path = Path(args.manifest).expanduser().resolve()
     npz_root = Path(args.npz_root).expanduser().resolve()
@@ -112,8 +124,8 @@ def main() -> int:
 
     train_out = build_dir / "merged_train.npz"
     val_out = build_dir / "merged_val.npz"
-    train_stats = merge_npz_files(split_files["train"], train_out)
-    val_stats = merge_npz_files(split_files["val"], val_out)
+    train_stats = merge_npz_files(split_files["train"], train_out, target_fps=target_fps)
+    val_stats = merge_npz_files(split_files["val"], val_out, target_fps=target_fps)
 
     resolved_manifest_path = build_dir / "manifest_resolved.csv"
     with resolved_manifest_path.open("w", encoding="utf-8", newline="") as f:
@@ -162,6 +174,9 @@ def main() -> int:
             "val_percent": args.val_percent,
             "hash_salt": args.hash_salt,
             "explicit_split_override": True,
+        },
+        "merge_options": {
+            "target_fps": target_fps,
         },
         "totals": {
             "rows_manifest": len(entries),

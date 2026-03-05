@@ -307,7 +307,29 @@ def hash_split(clip_id: str, val_percent: int, salt: str = "") -> str:
     return "val" if bucket < val_percent else "train"
 
 
-def merge_npz_files(npz_files: list[Path], output_path: Path) -> dict[str, Any]:
+def _resample_along_time(arr: np.ndarray, new_t: int) -> np.ndarray:
+    """Resample an array along time axis 0 using linear interpolation."""
+    old_t = int(arr.shape[0])
+    if old_t == new_t:
+        return arr
+    if old_t <= 0:
+        raise ValueError("cannot resample empty array")
+    if new_t <= 0:
+        raise ValueError("resampled length must be > 0")
+    if old_t == 1:
+        return np.repeat(arr, new_t, axis=0)
+
+    pos = np.linspace(0.0, float(old_t - 1), new_t, dtype=np.float64)
+    i0 = np.floor(pos).astype(np.int64)
+    i1 = np.minimum(i0 + 1, old_t - 1)
+    w = (pos - i0).astype(np.float32).reshape((new_t,) + (1,) * (arr.ndim - 1))
+    out = arr[i0] * (1.0 - w) + arr[i1] * w
+    return out.astype(arr.dtype, copy=False)
+
+
+def merge_npz_files(
+    npz_files: list[Path], output_path: Path, *, target_fps: int | None = None
+) -> dict[str, Any]:
     if not npz_files:
         raise ValueError("no npz files to merge")
 
@@ -325,7 +347,36 @@ def merge_npz_files(npz_files: list[Path], output_path: Path) -> dict[str, Any]:
     for p in npz_files:
         d = np.load(p, allow_pickle=True)
         cur_fps = int(d["fps"])
+        if cur_fps <= 0:
+            raise ValueError(f"invalid fps in {p}: {cur_fps}")
         cur_body_names = np.asarray(d["body_names"])
+        if target_fps is not None and target_fps <= 0:
+            raise ValueError(f"target_fps must be > 0, got {target_fps}")
+
+        joint_pos = np.asarray(d["joint_pos"])
+        joint_vel = np.asarray(d["joint_vel"])
+        body_pos_w = np.asarray(d["body_pos_w"])
+        body_quat_w = np.asarray(d["body_quat_w"])
+        body_lin_vel_w = np.asarray(d["body_lin_vel_w"])
+        body_ang_vel_w = np.asarray(d["body_ang_vel_w"])
+
+        if target_fps is not None and cur_fps != target_fps:
+            old_t = int(joint_pos.shape[0])
+            new_t = int(round(old_t * float(target_fps) / float(cur_fps)))
+            new_t = max(new_t, 1)
+
+            joint_pos = _resample_along_time(joint_pos, new_t)
+            joint_vel = _resample_along_time(joint_vel, new_t)
+            body_pos_w = _resample_along_time(body_pos_w, new_t)
+            body_quat_w = _resample_along_time(body_quat_w, new_t)
+            body_lin_vel_w = _resample_along_time(body_lin_vel_w, new_t)
+            body_ang_vel_w = _resample_along_time(body_ang_vel_w, new_t)
+
+            quat_norm = np.linalg.norm(body_quat_w, axis=-1, keepdims=True)
+            quat_norm = np.where(quat_norm < 1e-8, 1.0, quat_norm)
+            body_quat_w = body_quat_w / quat_norm
+            cur_fps = target_fps
+
         if fps is None:
             fps = cur_fps
             body_names = cur_body_names
@@ -334,8 +385,12 @@ def merge_npz_files(npz_files: list[Path], output_path: Path) -> dict[str, Any]:
                 raise ValueError(f"inconsistent fps in merge: {p} has {cur_fps}, expected {fps}")
             if body_names is None or not np.array_equal(cur_body_names, body_names):
                 raise ValueError(f"inconsistent body_names in merge: {p}")
-        for k in arrays:
-            arrays[k].append(np.asarray(d[k]))
+        arrays["joint_pos"].append(joint_pos)
+        arrays["joint_vel"].append(joint_vel)
+        arrays["body_pos_w"].append(body_pos_w)
+        arrays["body_quat_w"].append(body_quat_w)
+        arrays["body_lin_vel_w"].append(body_lin_vel_w)
+        arrays["body_ang_vel_w"].append(body_ang_vel_w)
 
     merged = {k: np.concatenate(v, axis=0) for k, v in arrays.items()}
     merged["fps"] = int(fps)  # type: ignore[arg-type]
@@ -358,4 +413,3 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=True, indent=2)
-

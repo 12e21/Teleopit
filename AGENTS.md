@@ -54,6 +54,7 @@ scripts/
 ├── render_sim.py         # Render single BVH → 3 videos (bvh skeleton, retarget, sim2sim), supports --format flag
 ├── render_all_lafan1.sh  # Batch render all data/lafan1/*.bvh
 ├── compute_ik_offsets.py # Compute IK quaternion offsets for new BVH formats (see IK Offset Calibration)
+├── ingest_motion.py      # Unified ingestion: BVH/PKL/NPZ -> NPZ clips + manifest
 └── data/                 # Dataset system scripts: migrate / validate / build
 tests/                    # 78 pytest tests
 data/                     # BVH motion data (gitignored)
@@ -251,7 +252,8 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for known issues.
 
 Quick reference:
  Conda env: `teleopit` (Python 3.10)
- Build dataset: `python scripts/data/build_dataset.py --manifest data/motion/manifests/v1.csv --dataset_version v1 --npz_root .`
+ Ingest data: `python scripts/ingest_motion.py --input data/hc_mocap_bvh --source hc_mocap_v1 --bvh_format hc_mocap --manifest data/motion/manifests/v1.csv --npz_root .`
+ Build dataset: `python scripts/data/build_dataset.py --manifest data/motion/manifests/v1.csv --dataset_version v1 --npz_root .` (mixed fps use `--target_fps 30`)
  Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 --motion_file data/motion/builds/v1/merged_train.npz --num_envs 4096 --max_iterations 30000`
  Export: `python train_mimic/scripts/save_onnx.py --checkpoint <path> --output policy.onnx`
  Eval: `python train_mimic/scripts/benchmark.py --task Tracking-Flat-G1-v0 --checkpoint <path> --motion_file data/motion/builds/v1/merged_val.npz --num_envs 1`

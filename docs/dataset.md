@@ -37,15 +37,41 @@ CSV 必须包含以下字段：
 | `enabled` | `1/0` 或 `true/false` |
 | `quality_tag` | 质量标签（如 `legacy`, `reviewed`） |
 
-## 三个脚本
+## 四个入口脚本
 
-位于 `scripts/data/`：
+位于根 `scripts/` 与 `scripts/data/`：
 
-1. `migrate_legacy_dataset.py`
-2. `validate_dataset.py`
-3. `build_dataset.py`
+1. `ingest_motion.py`（统一 ingestion：BVH/PKL/NPZ -> NPZ clips + manifest）
+2. `migrate_legacy_dataset.py`
+3. `validate_dataset.py`
+4. `build_dataset.py`
 
 核心逻辑位于 `train_mimic/data/dataset_lib.py`，根目录 CLI 仅做参数解析与调用。
+
+### 0) 统一 ingestion（推荐）
+
+```bash
+# BVH 来源（自动做 BVH -> PKL -> NPZ，并自动追加 manifest）
+python scripts/ingest_motion.py \
+  --input data/hc_mocap_bvh \
+  --source hc_mocap_v1 \
+  --bvh_format hc_mocap \
+  --manifest data/motion/manifests/v1.csv \
+  --npz_root .
+
+# PKL 来源
+python scripts/ingest_motion.py \
+  --input data/twist2_retarget_pkl/v1_v2_v3_g1 \
+  --source mocap_v1 \
+  --manifest data/motion/manifests/v1.csv \
+  --npz_root .
+```
+
+manifest 自动维护规则：
+- 新 `clip_id`：自动追加；
+- 现有 `clip_id`：默认报错（fail-fast）；
+- 显式 `--allow_update`：允许覆盖更新该行；
+- `num_frames/fps/file_rel` 由脚本从输出 NPZ 自动填充，不需要手工填写。
 
 ### 1) 迁移旧 NPZ 目录到 manifest
 
@@ -72,7 +98,21 @@ python scripts/data/build_dataset.py \
   --dataset_version v1 \
   --npz_root . \
   --build_root data/motion/builds
+
+# 若数据源存在混合 fps，可显式指定统一 fps（例如 30）
+python scripts/data/build_dataset.py \
+  --manifest data/motion/manifests/v1.csv \
+  --dataset_version v1_30hz \
+  --npz_root . \
+  --build_root data/motion/builds \
+  --target_fps 30
 ```
+
+`--target_fps` 对齐方式：
+- 仅在你显式设置该参数时启用；默认仍是严格同 fps 合并（不自动修补）；
+- 按时间轴线性重采样：`new_t = round(old_t * target_fps / old_fps)`；
+- 对 `joint_pos/joint_vel/body_*` 全部沿时间维插值；
+- `body_quat_w` 插值后会重新单位化，避免非单位四元数。
 
 默认切分策略：
 - 若 `split` 非空，使用 manifest 指定值；
@@ -103,11 +143,10 @@ python train_mimic/scripts/benchmark.py \
 ## Scale Up 流程（推荐）
 
 1. 新数据落到 `raw/<source>/`
-2. 转换为 `npz_clips/<source>/`
-3. 追加到 manifest（新数据先 `enabled=1`，`split` 留空）
-4. 跑 `validate_dataset.py`
-5. 跑 `build_dataset.py` 产出新版本（如 `v1.1`, `v2`）
-6. 训练与评估固定引用该版本 build 产物
+2. 跑 `ingest_motion.py`（统一转换并自动追加/更新 manifest）
+3. 跑 `validate_dataset.py`
+4. 跑 `build_dataset.py` 产出新版本（如 `v1.1`, `v2`）
+5. 训练与评估固定引用该版本 build 产物
 
 版本原则：
 - 构建版本不可变；修改数据即升版本；

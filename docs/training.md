@@ -58,10 +58,12 @@ python -c "import train_mimic.tasks; print('training OK')"
 快速示例：
 
 ```bash
-# 1) 从旧 NPZ 目录生成 manifest（v1）
-python scripts/data/migrate_legacy_dataset.py \
-    --input_npz_dir data/twist2_retarget_npz/OMOMO_g1_GMR \
-    --output_manifest data/motion/manifests/v1.csv \
+# 1) ingestion（推荐）：自动处理 BVH/PKL/NPZ -> NPZ clips，并自动追加 manifest
+python scripts/ingest_motion.py \
+    --input data/hc_mocap_bvh \
+    --source hc_mocap_v1 \
+    --bvh_format hc_mocap \
+    --manifest data/motion/manifests/v1.csv \
     --npz_root .
 
 # 2) 校验 manifest 与 clip 质量
@@ -75,11 +77,18 @@ python scripts/data/build_dataset.py \
     --dataset_version v1 \
     --npz_root . \
     --build_root data/motion/builds
+
+# 若 manifest 中包含混合 fps 数据，使用 --target_fps 统一后再合并
+# python scripts/data/build_dataset.py ... --target_fps 30
 ```
+
+> `--target_fps` 使用时间轴线性重采样统一帧率；`body_quat_w` 会在插值后重新归一化。
 
 构建完成后，训练/评估分别使用：
 - `data/motion/builds/v1/merged_train.npz`
 - `data/motion/builds/v1/merged_val.npz`
+
+> `ingest_motion.py` 默认行为：新 clip 自动追加 manifest；已存在 `clip_id` 直接报错。需要覆盖时显式加 `--allow_update`。
 
 ### PKL → NPZ 转换
 
