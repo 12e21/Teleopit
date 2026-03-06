@@ -27,3 +27,11 @@ class G1FlatTrackingEnvCfg(G1FlatEnvCfg):
         self.commands.motion.motion_file = (
             "data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz"
         )
+
+        # Increase the global simulation constraint buffer as well. mjlab's
+        # tracking base config sets sim.njmax=250, which is what triggers the
+        # runtime `nefc overflow` warnings during training when many contacts
+        # are active at once.
+        self.sim.njmax = 500
+        if self.sim.nconmax is not None and self.sim.nconmax < 150_000:
+            self.sim.nconmax = 150_000

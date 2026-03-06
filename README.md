@@ -405,6 +405,12 @@ python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --motion_file data/motion/builds/v1/merged_train.npz \
     --wandb_project teleopit
 
+# 6b. 单机 4 卡训练（--num_envs 表示每卡环境数）
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
+    --gpu_ids 0 1 2 3 \
+    --num_envs 1024 --max_iterations 30000 \
+    --motion_file data/motion/builds/v1/merged_train.npz
+
 # 7. 导出 ONNX 模型
 python train_mimic/scripts/save_onnx.py \
     --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \

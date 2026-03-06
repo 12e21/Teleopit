@@ -255,6 +255,7 @@ Quick reference:
  Ingest data: `python scripts/ingest_motion.py --input data/hc_mocap_bvh --source hc_mocap_v1 --bvh_format hc_mocap --manifest data/motion/manifests/v1.csv --npz_root .`
  Build dataset: `python scripts/data/build_dataset.py --manifest data/motion/manifests/v1.csv --dataset_version v1 --npz_root .` (mixed fps use `--target_fps 30`)
  Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 --motion_file data/motion/builds/v1/merged_train.npz --num_envs 4096 --max_iterations 30000`
+ Multi-GPU Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 --motion_file data/motion/builds/v1/merged_train.npz --gpu_ids 0 1 2 3 --num_envs 1024 --max_iterations 30000` (`--num_envs` is per-GPU)
  Export: `python train_mimic/scripts/save_onnx.py --checkpoint <path> --output policy.onnx`
  Eval: `python train_mimic/scripts/benchmark.py --task Tracking-Flat-G1-v0 --checkpoint <path> --motion_file data/motion/builds/v1/merged_val.npz --num_envs 1`
 
@@ -263,6 +264,7 @@ Quick reference:
  **Environment API**: mjlab `ManagerBasedRlEnv` + standard rsl_rl runner
  **Config system**: Python class-based env/runner cfg from task registry
  **Training task**: `Tracking-Flat-G1-v0`
+ **Multi-GPU training**: supported on a single node via `train_mimic/scripts/train.py --gpu_ids ...`; script relaunches itself with distributed workers, and `--num_envs` means per-GPU environments
  **Checkpoint format**: `logs/rsl_rl/{experiment}/{run}/model_{iter}.pt`
  **Network**: Standard MLP actor/critic (`[512,256,128]`, ELU)
  **Dataset system**: manifest CSV + validate + build; train/play/benchmark consume single NPZ via `--motion_file`

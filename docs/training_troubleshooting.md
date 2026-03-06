@@ -260,7 +260,64 @@ python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
 
 ---
 
-## 问题 4：benchmark 视频异常（只有 1 帧 / 保存失败 / EGL 报错）
+## 问题 4：日志中反复出现 `nefc overflow - please increase njmax ...`
+
+### 现象
+
+训练日志中频繁出现类似警告：
+
+```text
+nefc overflow - please increase njmax to 257
+nefc overflow - please increase njmax to 264
+```
+
+### 根本原因
+
+这不是数据文件或 Python 训练脚本本身报错，而是 **MuJoCo 约束缓冲区不足**。
+
+- `nefc`：当前仿真步中激活的标量约束数量
+- `njmax`：仿真允许分配的最大约束数量
+
+当机器人跌倒、发生大量足底接触或自碰撞时，活跃约束数会瞬间升高；如果超过 `njmax`，MuJoCo 就会打印该警告。
+
+在 Teleopit 的 `mjlab` 训练链路里，真正控制这个上限的是 **tracking 环境的全局仿真配置**，而不是单独的机器人 XML。`mjlab` 上游 tracking 默认配置中 `sim.njmax=250`，这正是警告中常见 `257/264` 一类数值的来源。
+
+### 解决方案
+
+在 `train_mimic/tasks/tracking/config/g1/flat_env_cfg.py` 中覆盖训练仿真参数：
+
+```python
+self.sim.njmax = 500
+if self.sim.nconmax is not None and self.sim.nconmax < 150_000:
+    self.sim.nconmax = 150_000
+```
+
+当前仓库已经包含这一修复。
+
+### 为什么不要只改机器人 XML
+
+仅修改 G1 XML 或 `MjSpec` 中的 `njmax` 对这个问题通常不够，因为训练时实际生效的是 `mjlab` 的 **simulation-level** `njmax`。如果仿真层仍保持 `250`，即使机器人模型层更大，也仍然会触发 overflow。
+
+### 验证方法
+
+启动训练后观察日志：
+
+- 若 warning 消失或显著减少，说明修复生效；
+- 若仍出现，而且提示值接近或超过 `500`，说明当前训练场景接触更多，可继续提高到 `800`。
+
+建议的下一档参数：
+
+```python
+self.sim.njmax = 800
+```
+
+### 影响
+
+`nefc overflow` 不一定会立刻导致训练崩溃，但它意味着部分接触/约束被截断，可能降低物理精度并影响训练稳定性。若日志中持续刷出该警告，建议优先修复，而不是忽略。
+
+---
+
+## 问题 5：benchmark 视频异常（只有 1 帧 / 保存失败 / EGL 报错）
 
 ### 现象 A：视频只有 1 帧
 

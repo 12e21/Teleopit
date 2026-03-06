@@ -161,6 +161,12 @@ python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --num_envs 4096 --max_iterations 30000 \
     --motion_file data/motion/builds/v1/merged_train.npz
 
+# 单机 4 卡训练（--num_envs 表示每卡环境数）
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
+    --gpu_ids 0 1 2 3 \
+    --num_envs 1024 --max_iterations 30000 \
+    --motion_file data/motion/builds/v1/merged_train.npz
+
 # 启用 wandb 日志（需要 wandb 账号）
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --num_envs 4096 --max_iterations 30000 \
@@ -178,7 +184,7 @@ tensorboard --logdir logs/rsl_rl/g1_tracking
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--task` | `Tracking-Flat-G1-v0` | 任务名 |
-| `--num_envs` | cfg 默认值 | 并行环境数 |
+| `--num_envs` | cfg 默认值 | 并行环境数；多卡时表示每卡环境数 |
 | `--max_iterations` | cfg 默认值 | 训练迭代数 |
 | `--motion_file` | cfg 默认值 | NPZ 运动数据路径（必须是单文件） |
 | `--seed` | `42` | 随机种子 |
@@ -186,12 +192,27 @@ tensorboard --logdir logs/rsl_rl/g1_tracking
 | `--experiment_name` | `g1_tracking` | 实验名（影响日志目录） |
 | `--resume` | 不设置 | 从指定 checkpoint 恢复训练 |
 | `--device` | `cuda:0` | 训练设备 |
+| `--gpu_ids` | 不设置 | 单机多卡启动辅助参数，例如 `--gpu_ids 0 1 2 3` |
+| `--master_port` | `29500` | 多卡时内部 torchrun 使用的端口 |
+
+### 多卡训练说明
+
+- 当前训练入口支持 **单机多卡**，通过 `--gpu_ids` 自动使用 `torchrun` 拉起分布式 worker。
+- 多卡时 `--num_envs` 的语义是 **每张卡的环境数**；例如 `--gpu_ids 0 1 2 3 --num_envs 1024` 表示总环境数为 `4096`。
+- 若显式传入 `--device`，在多卡 worker 中它必须与该进程的 `LOCAL_RANK` 对应（如 rank 2 必须用 `cuda:2`）；更推荐直接省略 `--device`。
+- 若遇到 `Address already in use`，通过 `--master_port 29600` 之类的参数更换端口。
 
 ```bash
 # 使用其他版本数据集（例如 v2）
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --motion_file data/motion/builds/v2/merged_train.npz \
     --num_envs 4096 --max_iterations 30000
+
+# 多卡训练其他版本数据集
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
+    --motion_file data/motion/builds/v2/merged_train.npz \
+    --gpu_ids 0 1 2 3 \
+    --num_envs 1024 --max_iterations 30000
 
 # 从 checkpoint 恢复
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
