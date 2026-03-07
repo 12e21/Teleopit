@@ -2,6 +2,8 @@
 
 本文档定义 train_mimic 的最小数据系统：在不改训练主入口（仍用 `--motion_file`）的前提下，实现可复现、可扩展的数据管理。
 
+> 入口导航：如果你想先了解整个项目入口，先看 [`docs/getting-started.md`](getting-started.md)；如果你已经完成数据准备，下一步看 [`docs/training.md`](training.md)。
+
 ## 目录约定
 
 建议目录（按需逐步迁移）：
@@ -36,6 +38,8 @@ CSV 必须包含以下字段：
 | `weight` | 采样权重（v1 仅记录，不进入训练采样器） |
 | `enabled` | `1/0` 或 `true/false` |
 | `quality_tag` | 质量标签（如 `legacy`, `reviewed`） |
+
+> 说明：这里的 `legacy` 只是数据治理标签，用于标记样本来源或质量阶段，不表示运行时会启用旧策略路径。
 
 ## 四个入口脚本
 
@@ -73,7 +77,7 @@ manifest 自动维护规则：
 - 显式 `--allow_update`：允许覆盖更新该行；
 - `num_frames/fps/file_rel` 由脚本从输出 NPZ 自动填充，不需要手工填写。
 
-### 1) 迁移旧 NPZ 目录到 manifest
+### 1) 迁移历史 NPZ 目录到 manifest
 
 ```bash
 python scripts/data/migrate_legacy_dataset.py \

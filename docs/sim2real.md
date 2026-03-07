@@ -2,6 +2,8 @@
 
 本文档介绍如何使用 Teleopit 通过 Unitree SDK2 控制实物 G1 机器人，支持手柄遥控和动捕遥操作两种模式。
 
+> 入口导航：如果你还在熟悉离线/在线推理主路径，先看 [`docs/inference.md`](inference.md)；如果你只是第一次接触项目，先看 [`docs/getting-started.md`](getting-started.md)。
+
 ## 概述
 
 Sim2Real 模块复用了 Teleopit 现有的动捕输入、运动重定向、观测构建和 RL 策略推理管线，将底层从 MuJoCo 仿真替换为 Unitree SDK2 DDS 通信，直接控制实物 G1 机器人。
@@ -158,7 +160,7 @@ python scripts/run_sim2real.py controller.policy_path=policy.onnx 'real_robot.kp
 | `kd_real` | 见下方 | 速度增益，直接传给 SDK |
 | `kd_damping` | `8.0` | 阻尼模式下的 kd 值 |
 
-### PD 增益（来自 TWIST2 deploy_real）
+### PD 增益（沿用早期 deploy_real 参考值）
 
 ```
 kp: [100,100,100,150,40,40, 100,100,100,150,40,40, 150,150,150,
@@ -209,7 +211,7 @@ Policy joint i → SDK motor i，29-DOF 顺序 1:1 对应：
 
 ### CRC32 校验
 
-纯 Python SDK 需手动计算 CRC（TWIST2 pybind 版本自动处理）：
+纯 Python SDK 需手动计算 CRC（早期 pybind 封装会自动处理）：
 
 ```python
 from unitree_sdk2py.utils.crc import CRC

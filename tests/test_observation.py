@@ -1,9 +1,8 @@
-"""Tests for teleopit.controllers.observation — TWIST2ObservationBuilder.
+"""Tests for legacy observation utilities kept for compatibility.
 
-Key invariants:
-- Output dimension is always 1402
-- History buffer works correctly
-- quatToEuler produces valid euler angles
+These tests cover `TWIST2ObservationBuilder`, which is still present in the
+codebase as a compatibility path, even though the main inference route now uses
+`MjlabObservationBuilder` with 160D observations.
 """
 import numpy as np
 import pytest
@@ -37,7 +36,7 @@ class TestQuatToEuler:
 
 
 class TestTWIST2ObservationBuilder:
-    """Tests for the observation builder."""
+    """Tests for the legacy TWIST2 observation builder."""
 
     def _make_builder(self, cfg=None):
         if cfg is None:

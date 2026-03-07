@@ -76,7 +76,7 @@ def default_angles():
 
 @pytest.fixture
 def obs_builder_cfg():
-    """Config dict for TWIST2ObservationBuilder."""
+    """Config dict for the legacy TWIST2ObservationBuilder."""
     return {
         "num_actions": NUM_ACTIONS,
         "ang_vel_scale": 0.25,

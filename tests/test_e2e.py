@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import cast
 
@@ -24,10 +25,11 @@ requires_mink = pytest.mark.skipif(not _has_module("mink"), reason="mink not ins
 
 
 def _asset_paths(project_root: Path) -> tuple[Path, Path, Path]:
-    policy = project_root.parent / "TWIST2" / "assets" / "ckpts" / "twist2_1017_20k.onnx"
+    policy_raw = os.environ.get("TELEOPIT_TEST_POLICY_ONNX", "").strip()
+    policy_env = Path(policy_raw).expanduser() if policy_raw else Path("__missing_policy__.onnx")
     bvh = project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "xsens_bvh_test" / "251021_04_boxing_120Hz_cm_3DsMax.bvh"
-    xml = project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_mocap_29dof.xml"
-    return policy, bvh, xml
+    xml = project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml"
+    return policy_env, bvh, xml
 
 
 @requires_mujoco
@@ -42,7 +44,7 @@ def test_bvh_to_mujoco_pipeline_stands_and_records(project_root: Path, tmp_dir: 
 
     policy_path, bvh_path, xml_path = _asset_paths(project_root)
     if not policy_path.exists() or not bvh_path.exists() or not xml_path.exists():
-        pytest.skip("required e2e assets are missing")
+        pytest.skip("set TELEOPIT_TEST_POLICY_ONNX to a compatible 160D ONNX policy to run this e2e test")
 
     robot_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "robot" / "g1.yaml")
     controller_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "controller" / "rl_policy.yaml")

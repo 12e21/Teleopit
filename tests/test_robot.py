@@ -13,10 +13,10 @@ from conftest import requires_mujoco
 
 
 def _find_xml_path():
-    """Try to locate the g1 XML file relative to the project."""
+    """Try to locate the recommended G1 sim2sim XML relative to the project."""
     candidates = [
-        Path(__file__).parent.parent / "GMR" / "assets" / "unitree_g1" / "g1_mocap_29dof.xml",
-        Path(__file__).parent.parent / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_mocap_29dof.xml",
+        Path(__file__).parent.parent / "GMR" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml",
+        Path(__file__).parent.parent / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml",
     ]
     for p in candidates:
         if p.exists():

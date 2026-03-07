@@ -2,6 +2,8 @@
 
 本文档介绍如何使用 Teleopit 训练 G1 人形机器人的全身运动追踪策略（mjlab + rsl_rl PPO）。
 
+> 入口导航：如果你还没完成数据准备，先看 [`docs/dataset.md`](dataset.md)；如果你只是第一次接触项目，建议先从 [`docs/getting-started.md`](getting-started.md) 开始。
+
 ## 环境搭建
 
 ### 前置要求
@@ -94,6 +96,8 @@ python scripts/data/build_dataset.py \
 
 训练使用 NPZ 格式的运动数据。mjlab 的 `MotionLoader` 要求**单个 NPZ 文件**，需要把多个片段合并。
 
+> 说明：下面示例中的 `data/twist2_retarget_pkl/` 与 `data/twist2_retarget_npz/` 是历史沿用的目录命名，表示“旧数据资产的存放位置”，**不代表当前训练或推理仍使用 TWIST2 观测/策略路径**。
+
 ```bash
 # 转换单个文件
 python train_mimic/scripts/convert_pkl_to_npz.py \
@@ -131,15 +135,15 @@ python train_mimic/scripts/convert_pkl_to_npz.py \
 | `body_ang_vel_w` | (T, nb, 3) | 角速度 |
 | `body_names` | (nb,) | body 名称列表 |
 
-### 可用数据集
+### 示例数据目录
 
-运动数据位于 `data/twist2_retarget_pkl/` 下（PKL 格式，需转换）：
+历史数据常见于 `data/twist2_retarget_pkl/` 下（PKL 格式，需转换）。这里保留的是目录命名示例，不是对当前主路径的命名建议：
 
 | 目录 | 数量 | 说明 |
 |------|------|------|
 | `OMOMO_g1_GMR` | 5882 | OMOMO 数据集（默认） |
 | `AMASS_g1_GMR8` | 13218 | AMASS 数据集 |
-| `twist1_to_twist2` | 12788 | TWIST1→TWIST2 转换 |
+| `twist1_to_twist2` | 12788 | 历史转换数据集目录名 |
 | `v1_v2_v3_g1` | 73 | 真实动捕数据 |
 
 ## 训练流程
@@ -477,6 +481,14 @@ MUJOCO_GL=egl python train_mimic/scripts/benchmark.py \
     --video_length 600 \
     --video_folder benchmark_results/videos
 ```
+
+如果你在 conda 环境里录视频时遇到 EGL / PyOpenGL 初始化错误，推荐先补齐 conda 侧依赖：
+
+```bash
+conda install -c conda-forge libopengl libglx libegl libglvnd pyopengl
+```
+
+在当前项目环境中，补齐这组依赖后，`benchmark.py --video` 与 `play.py --video` 可以直接工作；通常不再需要额外手动设置 `MUJOCO_GL`、`PYOPENGL_PLATFORM` 或 EGL vendor 环境变量。
 
 ### 跟踪误差
 

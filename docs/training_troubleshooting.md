@@ -2,6 +2,10 @@
 
 本文档记录 Teleopit 训练过程中的常见问题及解决方案。
 
+> 入口导航：训练流程看 [`docs/training.md`](training.md)，数据准备看 [`docs/dataset.md`](dataset.md)，项目总入口看 [`docs/getting-started.md`](getting-started.md)。
+
+> 说明：本文中的 `data/twist2_retarget_*` 路径主要是历史排障样本与旧数据目录名示例，不代表当前推荐的数据管理入口；新的训练数据组织方式以 `data/motion/` 下的 manifest/build 产物为准。
+
 ---
 
 ## 问题 1：Mean episode length = 1.00（机器人第一步就终止）
@@ -377,19 +381,25 @@ RuntimeError: indices should be either on cpu or on the same device as the index
 常见日志：
 - `libEGL warning: failed to open /dev/dri/renderD128: Permission denied`
 - `Video renderer initialization failed...`
+- `AttributeError: 'NoneType' object has no attribute 'eglQueryString'`
+- `AttributeError: 'NoneType' object has no attribute 'glGetError'`
 
 #### 根因
 
-当前用户对 GPU render 节点无权限，或机器上缺少可用 EGL/GL 后端库。
+常见原因有三类：
+1. 当前用户对 GPU render 节点无权限；
+2. 机器上缺少可用 EGL/GL 后端库；
+3. conda 环境只装了部分 EGL / GLVND 库，导致 `libEGL` 被 conda 覆盖，但 `libOpenGL` / `libGLX` 等基础库不完整。
 
 #### 解决方案
 
-1. 优先用 EGL（无头机器推荐）：
+1. 先补齐 conda 侧 OpenGL/EGL 依赖：
    ```bash
-   MUJOCO_GL=egl PYOPENGL_PLATFORM=egl python train_mimic/scripts/benchmark.py ... --video
+   conda install -c conda-forge libopengl libglx libegl libglvnd pyopengl
    ```
-2. 检查 `/dev/dri/renderD*` 权限与用户组（通常需加入 `video`/`render` 组并重新登录）
-3. 若机器无可用 GPU EGL，可尝试 CPU 渲染后端：
+2. 在当前项目环境中，补齐这组依赖后，`benchmark.py --video` 往往可以直接工作；通常不再需要额外手动设置 `MUJOCO_GL`、`PYOPENGL_PLATFORM` 或 EGL vendor 环境变量。
+3. 如果仍失败，再检查 `/dev/dri/renderD*` 权限与用户组（通常需加入 `video`/`render` 组并重新登录）
+4. 若机器无可用 GPU EGL，可尝试 CPU 渲染后端：
    ```bash
    MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa python train_mimic/scripts/benchmark.py ... --video
    ```
