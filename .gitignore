@@ -69,6 +69,7 @@ data/
 outputs/
 benchmark_results/
 logs/
+ckpt/
 wandb/
 *.log
 # Training - downloaded reference assets (re-downloadable)

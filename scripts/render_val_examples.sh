@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# render_val_examples.sh — Render a few val-set clips with benchmark.py --video.
+# render_val_examples.sh — Render a few dataset clips with benchmark.py --video.
 #
 # Keeps things intentionally simple:
-# - reads val clips from manifest_resolved.csv
+# - reads train/val clips from manifest_resolved.csv
 # - picks the first N matching clips
 # - runs benchmark.py once per clip
 # - does NOT set MUJOCO_GL; set it yourself before running if needed
@@ -10,6 +10,7 @@
 # Usage:
 #   bash scripts/render_val_examples.sh --checkpoint ckpt/model_10000.pt
 #   bash scripts/render_val_examples.sh --checkpoint ckpt/model_10000.pt --num 5
+#   bash scripts/render_val_examples.sh --checkpoint ckpt/model_10000.pt --split train
 #   bash scripts/render_val_examples.sh --checkpoint ckpt/model_10000.pt --clip_contains walk
 
 set -euo pipefail
@@ -21,6 +22,7 @@ CHECKPOINT=""
 DATASET_VERSION="twist2_full_v1_30hz"
 NUM=3
 CLIP_CONTAINS=""
+SPLIT="val"
 TASK="Tracking-Flat-G1-v0"
 
 usage() {
@@ -31,7 +33,8 @@ Usage:
 Options:
   --checkpoint <path>       Required. Path to checkpoint (.pt)
   --dataset_version <name>  Build version under data/motion/builds/ (default: ${DATASET_VERSION})
-  --num <n>                 Number of val clips to render (default: ${NUM})
+  --num <n>                 Number of clips to render (default: ${NUM})
+  --split <train|val>       Dataset split to render (default: ${SPLIT})
   --clip_contains <text>    Only render clips whose path contains this substring
   --task <name>             Gym task name (default: ${TASK})
   --help                    Show this help
@@ -54,6 +57,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --clip_contains)
             CLIP_CONTAINS="$2"
+            shift 2
+            ;;
+        --split)
+            SPLIT="$2"
             shift 2
             ;;
         --task)
@@ -88,6 +95,11 @@ if ! [[ "$NUM" =~ ^[0-9]+$ ]] || [[ "$NUM" -le 0 ]]; then
     exit 1
 fi
 
+if [[ "$SPLIT" != "train" && "$SPLIT" != "val" ]]; then
+    echo "ERROR: --split must be train or val"
+    exit 1
+fi
+
 MANIFEST_PATH="$PROJECT_ROOT/data/motion/builds/$DATASET_VERSION/manifest_resolved.csv"
 if [[ ! -f "$MANIFEST_PATH" ]]; then
     echo "ERROR: manifest_resolved.csv not found: $MANIFEST_PATH"
@@ -95,7 +107,7 @@ if [[ ! -f "$MANIFEST_PATH" ]]; then
 fi
 
 mapfile -t SELECTED < <(
-python - "$MANIFEST_PATH" "$NUM" "$CLIP_CONTAINS" <<'PY'
+python - "$MANIFEST_PATH" "$NUM" "$CLIP_CONTAINS" "$SPLIT" <<'PY'
 import csv
 import sys
 from pathlib import Path
@@ -103,13 +115,14 @@ from pathlib import Path
 manifest = Path(sys.argv[1])
 num = int(sys.argv[2])
 clip_contains = sys.argv[3].strip().lower()
+split = sys.argv[4].strip().lower()
 
 selected = []
 with manifest.open() as f:
     reader = csv.DictReader(f)
     split_key = 'resolved_split' if 'resolved_split' in reader.fieldnames else 'split'
     for row in reader:
-        if (row.get(split_key, '') or '').strip().lower() != 'val':
+        if (row.get(split_key, '') or '').strip().lower() != split:
             continue
         file_rel = (row.get('file_rel', '') or '').strip()
         clip_id = (row.get('clip_id', '') or '').strip()
@@ -126,16 +139,17 @@ PY
 )
 
 if [[ ${#SELECTED[@]} -eq 0 ]]; then
-    echo "ERROR: no val clips matched"
+    echo "ERROR: no ${SPLIT} clips matched"
     exit 1
 fi
 
-OUT_ROOT="$PROJECT_ROOT/benchmark_results/videos/val_examples/$(basename "$CHECKPOINT" .pt)"
+OUT_ROOT="$PROJECT_ROOT/benchmark_results/videos/${SPLIT}_examples/$(basename "$CHECKPOINT" .pt)"
 mkdir -p "$OUT_ROOT"
 
 echo "checkpoint: $CHECKPOINT"
 echo "manifest:   $MANIFEST_PATH"
 echo "output:     $OUT_ROOT"
+echo "split:      $SPLIT"
 echo "clips:      ${#SELECTED[@]}"
 echo ""
 

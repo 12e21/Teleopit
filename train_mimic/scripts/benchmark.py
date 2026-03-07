@@ -24,6 +24,37 @@ from pathlib import Path
 import numpy as np
 
 
+def _make_tracking_camera(mujoco_module: object, target_xyz: np.ndarray):
+    cam = mujoco_module.MjvCamera()
+    cam.type = mujoco_module.mjtCamera.mjCAMERA_FREE
+    cam.lookat[:] = np.asarray(target_xyz, dtype=np.float64)
+    cam.distance = 3.0
+    cam.azimuth = 135.0
+    cam.elevation = -15.0
+    return cam
+
+
+def _render_split_frame(unwrapped: object, command: object, mujoco_module: object) -> np.ndarray:
+    sim = getattr(unwrapped, "sim")
+    sim.update_render()
+    renderer = sim.renderer
+
+    ref_target = np.asarray(command.anchor_pos_w[0].detach().cpu().numpy(), dtype=np.float64)
+    robot_target = np.asarray(command.robot_anchor_pos_w[0].detach().cpu().numpy(), dtype=np.float64)
+
+    ref_cam = _make_tracking_camera(mujoco_module, ref_target)
+    renderer.update_scene(data=sim.mj_data, camera=ref_cam)
+    unwrapped.update_visualizers(renderer.scene)
+    ref_frame = renderer.render().copy()
+
+    robot_cam = _make_tracking_camera(mujoco_module, robot_target)
+    renderer.update_scene(data=sim.mj_data, camera=robot_cam)
+    unwrapped.update_visualizers(renderer.scene)
+    robot_frame = renderer.render().copy()
+
+    return np.concatenate((ref_frame, robot_frame), axis=1)
+
+
 def _to_float(value: object, torch_module: object) -> float:
     if isinstance(value, torch_module.Tensor):
         if value.numel() == 0:
@@ -67,7 +98,7 @@ def parse_args() -> argparse.Namespace:
                         help="Warmup steps ignored from metric aggregation (default: 100)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--video", action="store_true",
-                        help="Record benchmark rollout video")
+                        help="Record split-screen benchmark video (left=reference, right=robot)")
     parser.add_argument("--video_length", type=int, default=600,
                         help="Recorded video length in steps (default: 600)")
     parser.add_argument("--video_folder", type=str, default=None,
@@ -141,19 +172,25 @@ def main() -> int:
         else:
             raise
 
+    env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+
+    video_writer = None
+    video_path: Path | None = None
+    video_steps = 0
+    mujoco = None
     if args.video:
+        import imageio.v2 as imageio
+        import mujoco as mujoco_module
+
         video_folder = args.video_folder or "benchmark_results/videos"
         Path(video_folder).mkdir(parents=True, exist_ok=True)
-        video_length = min(args.video_length, args.num_eval_steps)
-        env = gym.wrappers.RecordVideo(
-            env,
-            video_folder=video_folder,
-            step_trigger=lambda step: step == 0,
-            video_length=video_length,
-            disable_logger=True,
-        )
-        print(f"[INFO] Recording benchmark video to: {video_folder}")
-    env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+        video_path = Path(video_folder) / "benchmark_split.mp4"
+        video_steps = min(args.video_length, args.num_eval_steps)
+        video_fps = max(1, int(round(1.0 / env.unwrapped.step_dt)))
+        video_writer = imageio.get_writer(str(video_path), fps=video_fps, quality=8)
+        mujoco = mujoco_module
+        print(f"[INFO] Recording split benchmark video to: {video_path}")
+        print("[INFO] Split layout: left=reference, right=robot")
 
     log_dir = os.path.dirname(args.checkpoint)
     runner = OnPolicyRunner(env, _to_rsl_rl5_cfg(asdict(agent_cfg)), log_dir=log_dir, device=device)
@@ -182,6 +219,10 @@ def main() -> int:
             obs, rewards, dones, extras = env.step(actions)
             ep_len_buf += 1
 
+            if video_writer is not None and mujoco is not None and step < video_steps:
+                frame = _render_split_frame(env.unwrapped, cmd, mujoco)
+                video_writer.append_data(frame)
+
             done_mask = dones > 0
             num_done = int(done_mask.sum().item())
             if num_done > 0:
@@ -207,6 +248,8 @@ def main() -> int:
             if isinstance(extras, dict) and "time_outs" in extras and isinstance(extras["time_outs"], torch.Tensor):
                 timeout_events += int(extras["time_outs"].sum().item())
     finally:
+        if video_writer is not None:
+            video_writer.close()
         env.close()
 
     effective_steps = args.num_eval_steps - args.warmup_steps
@@ -318,6 +361,8 @@ def main() -> int:
 
     print(f"\nSaved summary to: {output_path}")
     print(f"Saved detailed json to: {json_path}")
+    if video_path is not None:
+        print(f"Saved split video to: {video_path}")
     return 0
 
 
