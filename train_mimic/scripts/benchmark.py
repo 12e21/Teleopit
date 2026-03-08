@@ -9,7 +9,7 @@ Can optionally render and save a benchmark video for qualitative inspection.
 Usage:
     python train_mimic/scripts/benchmark.py --task Tracking-Flat-G1-v0 \
         --checkpoint logs/rsl_rl/g1_tracking/.../model_30000.pt \
-        --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/sub10_clothesstand_000.npz \
+        --motion_file data/motion/builds/twist2_full_v1_30hz/merged_val.npz \
         --num_envs 1
 """
 
@@ -22,6 +22,8 @@ from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
+
+from train_mimic.scripts.train import _validate_motion_file
 
 
 def _make_tracking_camera(mujoco_module: object, target_xyz: np.ndarray):
@@ -116,6 +118,7 @@ def main() -> int:
         raise ValueError("--num_eval_steps must be greater than --warmup_steps")
     if args.video and args.num_envs != 1:
         raise ValueError("--video currently requires --num_envs 1")
+    _validate_motion_file(args.motion_file)
 
     # Set render backend before importing modules that may initialize MuJoCo/GL.
     if args.video and "MUJOCO_GL" not in os.environ:
@@ -155,6 +158,15 @@ def main() -> int:
     env_cfg.events.push_robot = None
     env_cfg.commands.motion.pose_range = {}
     env_cfg.commands.motion.velocity_range = {}
+    step_dt = float(env_cfg.decimation) * float(env_cfg.sim.mujoco.timestep)
+    required_episode_s = args.num_eval_steps * step_dt + 1.0
+    if float(env_cfg.episode_length_s) < required_episode_s:
+        env_cfg.episode_length_s = required_episode_s
+    if args.video:
+        env_cfg.terminations.time_out = None
+        env_cfg.terminations.anchor_pos = None
+        env_cfg.terminations.anchor_ori = None
+        env_cfg.terminations.ee_body_pos = None
 
     device = args.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -202,6 +214,7 @@ def main() -> int:
     unwrapped = env.unwrapped
 
     cmd = unwrapped.command_manager.get_term("motion")
+    prev_motion_step = int(cmd.time_steps[0].item()) if hasattr(cmd, "time_steps") else -1
     metric_keys = sorted(cmd.metrics.keys())
     metric_series: dict[str, list[float]] = {k: [] for k in metric_keys}
     reward_series: list[float] = []
@@ -219,11 +232,20 @@ def main() -> int:
             obs, rewards, dones, extras = env.step(actions)
             ep_len_buf += 1
 
-            if video_writer is not None and mujoco is not None and step < video_steps:
-                frame = _render_split_frame(env.unwrapped, cmd, mujoco)
-                video_writer.append_data(frame)
+            curr_motion_step = int(cmd.time_steps[0].item()) if hasattr(cmd, "time_steps") else prev_motion_step
+            motion_wrapped = prev_motion_step >= 0 and curr_motion_step < prev_motion_step
 
             done_mask = dones > 0
+            if video_writer is not None and mujoco is not None and step < video_steps:
+                if motion_wrapped:
+                    print(f"[INFO] Stopping video at step {step + 1}: motion clip reached the end.")
+                    video_writer.close()
+                    video_writer = None
+                else:
+                    frame = _render_split_frame(env.unwrapped, cmd, mujoco)
+                    video_writer.append_data(frame)
+
+            prev_motion_step = curr_motion_step
             num_done = int(done_mask.sum().item())
             if num_done > 0:
                 done_events += num_done

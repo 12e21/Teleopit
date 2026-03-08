@@ -27,7 +27,7 @@ def _args(**overrides: object) -> argparse.Namespace:
         "seed": 42,
         "wandb_project": None,
         "experiment_name": None,
-        "motion_file": "data/motion/builds/twist2_full_30hz/merged_train.npz",
+        "motion_file": "data/motion/builds/twist2_full_v1_30hz/merged_train.npz",
         "resume": None,
         "device": None,
         "gpu_ids": None,

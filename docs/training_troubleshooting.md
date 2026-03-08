@@ -12,213 +12,55 @@
 
 ### 现象
 
-训练日志显示：
+训练日志常见以下组合：
 - `Mean episode length: 1.00`
-- `Episode_Termination/anchor_pos` 接近并行环境总数（如 64 envs 中有 62 个触发）
-- `Metrics/motion/error_anchor_pos` > 0.5m（远超 0.25m 终止阈值）
-- `Metrics/motion/error_body_rot` ≈ 1.5-1.8 rad（接近 π）
+- `Episode_Termination/anchor_pos` 接近并行环境总数
+- `Metrics/motion/error_anchor_pos` > `0.5m`
+- `Metrics/motion/error_body_rot` 很大（常接近 `π`）
 
 ### 根本原因
 
-`convert_pkl_to_npz.py` 的两个转换错误导致 NPZ 运动数据与 MuJoCo 仿真坐标系不匹配。
+通常不是 PPO 超参数本身的问题，而是 **motion NPZ 的监督标签与 MuJoCo 中实际 FK 不一致**。
+在历史数据链路里，这类不一致主要有三种：
 
----
+1. **body 位置坐标系错误**：把根局部坐标直接当世界坐标叠加；
+2. **body 顺序错误**：沿用 PKL 的 38-body 顺序，而不是 mjlab G1 的 30-body 顺序；
+3. **body 朝向 / 角速度标签错误**：把所有 body 近似成 root 朝向，导致 articulated pose reward 自相矛盾。
 
-### Bug 1：body 位置坐标系错误
+当前版本的 `convert_pkl_to_npz.py` 已修复上述问题：
+- `body_pos_w/body_quat_w/body_ang_vel_w` 由 MuJoCo FK 重建；
+- body 顺序与名称对齐 mjlab G1 robot；
+- 可用 `scripts/data/check_motion_npz_fk.py` 做一致性校验。
 
-#### 问题描述
+### 快速排查
 
-PKL 文件中 `local_body_pos` 是 body 在**根节点局部坐标系**下的位置，不是世界坐标系下的偏移量。
-
-旧版转换代码直接相加，忽略了根节点的旋转：
-
-```python
-# 错误（旧版）
-body_pos_w = local_body_pos + root_pos[:, None, :]
-```
-
-正确做法是先将局部坐标旋转到世界坐标系，再加上根节点位置：
-
-```python
-# 正确（新版）
-root_rot_wxyz = quat_xyzw_to_wxyz(root_rot_xyzw)
-root_rot_expanded = np.broadcast_to(root_rot_wxyz[:, None, :], (T, nb, 4)).reshape(T * nb, 4)
-local_body_pos_flat = local_body_pos.reshape(T * nb, 3)
-body_pos_w = root_pos[:, None, :] + quat_rotate(root_rot_expanded, local_body_pos_flat).reshape(T, nb, 3)
-```
-
-#### 影响
-
-当机器人处于大角度旋转姿态时（如 yaw=120°），肢体位置误差显著：
-- 脚踝：0.08-0.19m
-- 手腕：0.46m
-
-这些误差导致机器人在 reset 后立即触发 `bad_anchor_pos` 或 `bad_motion_body_pos` 终止条件。
-
-#### 验证方法
-
-使用 MuJoCo FK 验证转换正确性：
-
-```python
-import mujoco
-import numpy as np
-
-# 加载 NPZ
-npz = np.load("data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz", allow_pickle=True)
-
-# 加载 MuJoCo model
-model = mujoco.MjModel.from_xml_path("teleopit/retargeting/gmr/assets/unitree_g1/g1_sim2sim_29dof.xml")
-data = mujoco.MjData(model)
-
-# 设置第一帧状态
-data.qpos[:3] = npz["body_pos_w"][0, 0]  # root position
-data.qpos[3:7] = npz["body_quat_w"][0, 0]  # root quaternion (wxyz)
-data.qpos[7:] = npz["joint_pos"][0]  # joint positions
-
-mujoco.mj_kinematics(model, data)
-
-# 对比 NPZ 和 FK 结果
-for body_name in ["pelvis", "left_ankle_roll_link", "torso_link", "left_wrist_yaw_link"]:
-    body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
-    fk_pos = data.xpos[body_id]
-    npz_idx = list(npz["body_names"]).index(body_name)
-    npz_pos = npz["body_pos_w"][0, npz_idx]
-    error = np.linalg.norm(fk_pos - npz_pos)
-    print(f"{body_name}: FK={fk_pos}, NPZ={npz_pos}, error={error:.4f}m")
-```
-
-**预期结果**：所有 body 的误差应 < 0.001m。
-
----
-
-### Bug 2：body 顺序与 mjlab G1 robot 不匹配
-
-#### 问题描述
-
-PKL 文件有 **38 个 body**，mjlab G1 robot 只有 **30 个 body**，且顺序不同。
-
-**PKL 额外的 8 个 body**（mjlab G1 没有）：
-- `left_toe_link`, `right_toe_link`（脚趾）
-- `pelvis_contour_link`（骨盆轮廓）
-- `head_link`, `head_mocap`（头部）
-- `imu_in_torso`（IMU 传感器）
-- `left_rubber_hand`, `right_rubber_hand`（手部）
-
-**顺序错位示例**：
-```
-PKL[7] = left_toe_link（mjlab 没有）
-PKL[8] = pelvis_contour_link（mjlab 没有）
-PKL[9] = right_hip_pitch_link → 应该在 mjlab[7]
-```
-
-#### 为什么会出错
-
-`mjlab` 的 `MotionLoader` 使用 **robot body 索引**直接访问 NPZ：
-
-```python
-# mjlab/tasks/tracking/mdp/commands.py
-body_indexes = robot.find_bodies(cfg.body_names)  # 返回 [0, 2, 4, 6, 8, ...]
-body_pos_w = motion.body_pos_w[time_steps, body_indexes]  # 直接用索引访问
-```
-
-如果 NPZ 按 PKL 顺序保存 38 个 body，当访问 `body_pos_w[:, 7]` 时：
-- **期望**：`right_hip_pitch_link`（mjlab robot 的第 7 个 body）
-- **实际**：`left_toe_link`（PKL 的第 7 个 body）
-
-结果是读取到完全错误的 body 位置数据。
-
-#### 修复方法
-
-新版 `convert_pkl_to_npz.py` 会：
-1. 从 PKL 的 38 个 body 中选出 mjlab G1 需要的 30 个
-2. 按 mjlab G1 robot body 顺序重新排列
-3. 保存时使用 mjlab G1 的 body 名称列表
-
-```python
-# 定义 mjlab G1 robot body 顺序（30 个）
-_MJLAB_G1_BODY_NAMES = [
-    "pelvis",
-    "left_hip_pitch_link", "left_hip_roll_link", "left_hip_yaw_link",
-    "left_knee_link", "left_ankle_pitch_link", "left_ankle_roll_link",
-    "right_hip_pitch_link", "right_hip_roll_link", "right_hip_yaw_link",
-    "right_knee_link", "right_ankle_pitch_link", "right_ankle_roll_link",
-    "waist_yaw_link", "waist_roll_link", "torso_link",
-    "left_shoulder_pitch_link", "left_shoulder_roll_link", "left_shoulder_yaw_link",
-    "left_elbow_link", "left_wrist_roll_link", "left_wrist_pitch_link", "left_wrist_yaw_link",
-    "right_shoulder_pitch_link", "right_shoulder_roll_link", "right_shoulder_yaw_link",
-    "right_elbow_link", "right_wrist_roll_link", "right_wrist_pitch_link", "right_wrist_yaw_link",
-]
-
-# 创建索引映射并重新排序
-pkl_to_mjlab_idx = [body_names.index(n) for n in _MJLAB_G1_BODY_NAMES]
-body_pos_w = body_pos_w[:, pkl_to_mjlab_idx]  # (T, 38, 3) → (T, 30, 3)
-body_quat_w = body_quat_w[:, pkl_to_mjlab_idx]
-body_lin_vel_w = body_lin_vel_w[:, pkl_to_mjlab_idx]
-body_ang_vel_w = body_ang_vel_w[:, pkl_to_mjlab_idx]
-
-# 保存时使用 mjlab body 名称
-np.savez(npz_path, ..., body_names=np.array(_MJLAB_G1_BODY_NAMES, dtype=str))
-```
-
----
-
-### 解决方案
-
-#### 1. 检查是否使用旧版脚本生成的 NPZ
+先检查当前 clip 是否与 FK 一致：
 
 ```bash
-python -c "
-import numpy as np
-npz = np.load('data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz', allow_pickle=True)
-print('Body count:', npz['body_pos_w'].shape[1])
-print('Expected: 30 (mjlab G1 robot)')
-if npz['body_pos_w'].shape[1] == 38:
-    print('WARNING: NPZ has 38 bodies (PKL ordering), need to regenerate!')
-"
+python scripts/data/check_motion_npz_fk.py     --npz data/motion/npz_clips/<source>/<clip>.npz
 ```
 
-#### 2. 重新生成 NPZ 数据
+建议判据：
+- `pos_max < 1e-3 m`
+- `quat_mean < 0.05 rad`
+- `quat_p95 < 0.10 rad`
+
+如果检查失败，优先重新生成数据：
 
 ```bash
-# 删除旧数据
-rm -rf data/twist2_retarget_npz/OMOMO_g1_GMR
-
-# 使用修复后的脚本重新转换
-python train_mimic/scripts/convert_pkl_to_npz.py \
-    --input data/twist2_retarget_pkl/OMOMO_g1_GMR \
-    --output data/twist2_retarget_npz/OMOMO_g1_GMR \
-    --merge
+python train_mimic/scripts/convert_pkl_to_npz.py     --input data/twist2_retarget_pkl/<source>     --output data/twist2_retarget_npz/<source>     --merge
 ```
 
-转换完成后验证：
-```bash
-python -c "
-import numpy as np
-npz = np.load('data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz', allow_pickle=True)
-print('Body count:', npz['body_pos_w'].shape[1])
-print('Body names:', list(npz['body_names']))
-print('First body should be pelvis:', npz['body_names'][0])
-print('Body 15 should be torso_link:', npz['body_names'][15])
-"
-```
-
-#### 3. 验证修复效果
-
-快速训练 100 轮：
+然后做一个短训练 smoke test：
 
 ```bash
-python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
-    --num_envs 64 --max_iterations 100 \
-    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0     --num_envs 64 --max_iterations 100     --motion_file data/twist2_retarget_npz/<source>/merged.npz
 ```
 
-**预期指标**（第 99 轮）：
-- `Mean episode length` > 5（理想情况 8-10）
-- `Metrics/motion/error_anchor_pos` < 0.2m
-- `Episode_Termination/anchor_pos` < 5（< 8% × 64 envs）
-- `Metrics/motion/error_body_rot` < 1.0 rad
-
-如果指标符合预期，说明修复成功，可以开始完整训练。
+预期现象：
+- `Mean episode length` 明显大于 `1`
+- `Metrics/motion/error_anchor_pos` 开始下降
+- `Episode_Termination/anchor_pos` 不再在起步阶段爆满
 
 ---
 

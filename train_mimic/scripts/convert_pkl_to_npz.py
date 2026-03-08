@@ -48,6 +48,13 @@ from pathlib import Path
 
 import numpy as np
 
+from train_mimic.data.motion_fk import (
+    MotionFkExtractor,
+    compute_body_velocities,
+    normalize_quaternion,
+    quat_xyzw_to_wxyz,
+)
+
 
 # mjlab G1 robot body ordering (matches robot.body_names from G1_ROBOT_CFG).
 # mjlab's MotionLoader uses robot body indices to index into NPZ body_pos_w,
@@ -64,81 +71,41 @@ _MJLAB_G1_BODY_NAMES = [
     "right_shoulder_pitch_link", "right_shoulder_roll_link", "right_shoulder_yaw_link",
     "right_elbow_link", "right_wrist_roll_link", "right_wrist_pitch_link", "right_wrist_yaw_link",
 ]
+def _validate_required_bodies(body_names: list[str], pkl_path: str) -> None:
+    missing = sorted(set(_MJLAB_G1_BODY_NAMES).difference(body_names))
+    if missing:
+        raise ValueError(
+            f"PKL body metadata missing required G1 bodies for conversion: {missing}. "
+            f"File: {pkl_path}"
+        )
 
 
-def quat_xyzw_to_wxyz(q: np.ndarray) -> np.ndarray:
-    """Convert quaternion from xyzw (IsaacGym) to wxyz (MuJoCo) convention."""
-    return q[..., [3, 0, 1, 2]]
+def _validate_fk_outputs(body_quat_w: np.ndarray, body_ang_vel_w: np.ndarray, pkl_path: str) -> None:
+    quat_spread = np.max(np.linalg.norm(body_quat_w - body_quat_w[:, :1, :], axis=-1))
+    if quat_spread < 1e-5:
+        raise ValueError(
+            "FK-derived body_quat_w collapsed to a rigid-body solution across all tracked bodies. "
+            f"This indicates invalid conversion output for {pkl_path}."
+        )
+
+    if not np.isfinite(body_ang_vel_w).all():
+        raise ValueError(f"FK-derived body_ang_vel_w contains NaN/Inf for {pkl_path}")
 
 
-def quat_multiply(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
-    """Multiply two wxyz quaternions: q1 * q2.
-
-    Args:
-        q1: (..., 4) wxyz
-        q2: (..., 4) wxyz
-    Returns:
-        (..., 4) wxyz
-    """
-    w1, x1, y1, z1 = q1[..., 0], q1[..., 1], q1[..., 2], q1[..., 3]
-    w2, x2, y2, z2 = q2[..., 0], q2[..., 1], q2[..., 2], q2[..., 3]
-    return np.stack(
-        [
-            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
-        ],
-        axis=-1,
-    )
-
-
-def quat_conjugate(q: np.ndarray) -> np.ndarray:
-    """Conjugate of wxyz quaternion."""
-    conj = q.copy()
-    conj[..., 1:] = -conj[..., 1:]
-    return conj
-
-
-def quat_to_angular_velocity(q: np.ndarray, dt: float) -> np.ndarray:
-    """Compute angular velocity from quaternion sequence.
-
-    Uses finite differences: omega = 2 * q_dot * q_conj (imaginary part).
-
-    Args:
-        q: (T, ..., 4) wxyz quaternion sequence
-        dt: time step
-
-    Returns:
-        (T, ..., 3) angular velocity in world frame
-    """
-    q_dot = np.gradient(q, dt, axis=0)
-    # omega = 2 * q_dot * conj(q), take imaginary (xyz) part
-    product = quat_multiply(q_dot, quat_conjugate(q))
-    return 2.0 * product[..., 1:4]
-
-
-def quat_rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:
-    """Rotate vector v by quaternion q (wxyz convention).
-
-    Args:
-        q: (..., 4) wxyz quaternion
-        v: (..., 3) vector
-
-    Returns:
-        (..., 3) rotated vector
-    """
-    # q * [0, v] * q_conj
-    v_quat = np.zeros((*v.shape[:-1], 4), dtype=v.dtype)
-    v_quat[..., 1:4] = v
-    rotated = quat_multiply(quat_multiply(q, v_quat), quat_conjugate(q))
-    return rotated[..., 1:4]
-
-
-def convert_pkl_to_npz(pkl_path: str, npz_path: str) -> None:
+def convert_pkl_to_npz(
+    pkl_path: str,
+    npz_path: str,
+    *,
+    extractor: MotionFkExtractor | None = None,
+) -> None:
     """Convert a single PKL motion file to NPZ format."""
     with open(pkl_path, "rb") as f:
         data = pickle.load(f)
+
+    required_keys = {"fps", "root_pos", "root_rot", "dof_pos", "link_body_list"}
+    missing = sorted(required_keys.difference(data.keys()))
+    if missing:
+        raise ValueError(f"Missing PKL keys {missing} in {pkl_path}")
 
     fps: int = int(data["fps"])
     dt = 1.0 / fps
@@ -146,52 +113,36 @@ def convert_pkl_to_npz(pkl_path: str, npz_path: str) -> None:
     root_pos = np.asarray(data["root_pos"], dtype=np.float32)  # (T, 3)
     root_rot_xyzw = np.asarray(data["root_rot"], dtype=np.float32)  # (T, 4) xyzw
     dof_pos = np.asarray(data["dof_pos"], dtype=np.float32)  # (T, 29)
-    local_body_pos = np.asarray(data["local_body_pos"], dtype=np.float32)  # (T, 38, 3)
     body_names: list[str] = list(data["link_body_list"])
+    _validate_required_bodies(body_names, pkl_path)
 
-    T = root_pos.shape[0]
-    nb = local_body_pos.shape[1]
+    if root_pos.ndim != 2 or root_pos.shape[1] != 3:
+        raise ValueError(f"root_pos must be (T,3), got {root_pos.shape} in {pkl_path}")
+    if root_rot_xyzw.ndim != 2 or root_rot_xyzw.shape[1] != 4:
+        raise ValueError(f"root_rot must be (T,4), got {root_rot_xyzw.shape} in {pkl_path}")
+    if dof_pos.ndim != 2:
+        raise ValueError(f"dof_pos must be 2D, got {dof_pos.shape} in {pkl_path}")
+    if not (root_pos.shape[0] == root_rot_xyzw.shape[0] == dof_pos.shape[0]):
+        raise ValueError(
+            f"root_pos/root_rot/dof_pos time dimensions mismatch in {pkl_path}: "
+            f"{root_pos.shape[0]}/{root_rot_xyzw.shape[0]}/{dof_pos.shape[0]}"
+        )
 
     # Joint velocity via finite difference
     joint_vel = np.gradient(dof_pos, dt, axis=0).astype(np.float32)
 
     # Convert root quaternion: xyzw -> wxyz
-    root_rot_wxyz = quat_xyzw_to_wxyz(root_rot_xyzw)  # (T, 4)
+    root_rot_wxyz = normalize_quaternion(quat_xyzw_to_wxyz(root_rot_xyzw))
 
-    # Body positions in world frame: local_body_pos is in root's local frame,
-    # need to rotate by root quaternion then translate
-    # body_pos_w[t,i] = root_pos[t] + R(root_rot[t]) @ local_body_pos[t,i]
-    # Vectorized: expand root_rot_wxyz to (T, nb, 4) and rotate all bodies at once
-    root_rot_expanded = np.broadcast_to(root_rot_wxyz[:, None, :], (T, nb, 4)).reshape(T * nb, 4)
-    local_body_pos_flat = local_body_pos.reshape(T * nb, 3)
-    body_pos_w = root_pos[:, None, :] + quat_rotate(root_rot_expanded, local_body_pos_flat).reshape(T, nb, 3)
-
-    # Body quaternions in world frame
-    # NOTE: PKL doesn't store per-body orientations. We use root orientation
-    # for all bodies as an approximation. This is acceptable since mjlab's
-    # tracking primarily focuses on body positions (higher reward weight).
-    # For precise orientation tracking, use MuJoCo FK from joint angles.
-    body_quat_w = np.tile(root_rot_wxyz[:, None, :], (1, nb, 1))  # (T, nb, 4)
-
-    # Body linear velocities via finite difference
-    body_lin_vel_w = np.gradient(body_pos_w, dt, axis=0).astype(np.float32)
-
-    # Body angular velocities via quaternion differentiation
-    body_ang_vel_w = quat_to_angular_velocity(body_quat_w, dt).astype(np.float32)
-
-    # Normalize quaternions
-    norms = np.linalg.norm(body_quat_w, axis=-1, keepdims=True)
-    norms = np.where(norms < 1e-8, 1.0, norms)
-    body_quat_w = body_quat_w / norms
-
-    # Reorder bodies to match mjlab G1 robot body ordering.
-    # MotionLoader uses robot body indices to index into body_pos_w, so the
-    # NPZ body ordering must exactly match the mjlab G1 robot body list.
-    pkl_to_mjlab_idx = [body_names.index(n) for n in _MJLAB_G1_BODY_NAMES]
-    body_pos_w = body_pos_w[:, pkl_to_mjlab_idx]
-    body_quat_w = body_quat_w[:, pkl_to_mjlab_idx]
-    body_lin_vel_w = body_lin_vel_w[:, pkl_to_mjlab_idx]
-    body_ang_vel_w = body_ang_vel_w[:, pkl_to_mjlab_idx]
+    fk_extractor = extractor or MotionFkExtractor()
+    body_pos_w, body_quat_w = fk_extractor.extract(
+        root_pos,
+        root_rot_wxyz,
+        dof_pos,
+        _MJLAB_G1_BODY_NAMES,
+    )
+    body_lin_vel_w, body_ang_vel_w = compute_body_velocities(body_pos_w, body_quat_w, dt)
+    _validate_fk_outputs(body_quat_w, body_ang_vel_w, pkl_path)
 
     # Save
     os.makedirs(os.path.dirname(npz_path) or ".", exist_ok=True)
@@ -284,11 +235,12 @@ def main() -> None:
             return
         print(f"Found {len(pkl_files)} PKL files in {input_path}")
         output_path.mkdir(parents=True, exist_ok=True)
+        extractor = MotionFkExtractor()
         for i, pkl_file in enumerate(pkl_files):
             rel = pkl_file.relative_to(input_path)
             npz_file = output_path / rel.with_suffix(".npz")
             npz_file.parent.mkdir(parents=True, exist_ok=True)
-            convert_pkl_to_npz(str(pkl_file), str(npz_file))
+            convert_pkl_to_npz(str(pkl_file), str(npz_file), extractor=extractor)
             if (i + 1) % 100 == 0 or (i + 1) == len(pkl_files):
                 print(f"  [{i + 1}/{len(pkl_files)}] {rel}")
         print(f"Done. Converted {len(pkl_files)} files to {output_path}")

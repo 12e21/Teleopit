@@ -116,9 +116,16 @@ python train_mimic/scripts/convert_pkl_to_npz.py \
     --input data/twist2_retarget_npz/OMOMO_g1_GMR \
     --output data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
     --merge
+
+# FK 一致性校验（推荐在大规模训练前做）
+python scripts/data/check_motion_npz_fk.py \
+    --npz data/twist2_retarget_npz/OMOMO_g1_GMR/sub10_clothesstand_000.npz
 ```
 
 > **注意**：`--merge` 沿时间轴拼接所有片段，训练时随机采样起始帧，片段间的不连续不影响训练效果。
+>
+> **当前实现**：`convert_pkl_to_npz.py` 会使用 MuJoCo FK 从 `root_pos/root_rot/dof_pos` 重建 `body_pos_w/body_quat_w`，
+> 不再使用“所有 body 共享 root 朝向”的近似标签。
 
 ### NPZ 数据格式
 
@@ -154,7 +161,7 @@ python train_mimic/scripts/convert_pkl_to_npz.py \
 # 默认使用 tensorboard 日志（不需要 wandb）
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --num_envs 64 --max_iterations 100 \
-    --motion_file data/motion/builds/v1/merged_train.npz
+    --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz
 ```
 
 ### 完整训练
@@ -163,18 +170,18 @@ python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
 # Tensorboard 日志（默认）
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --num_envs 4096 --max_iterations 30000 \
-    --motion_file data/motion/builds/v1/merged_train.npz
+    --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz
 
 # 单机 4 卡训练（--num_envs 表示每卡环境数）
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --gpu_ids 0 1 2 3 \
     --num_envs 1024 --max_iterations 30000 \
-    --motion_file data/motion/builds/v1/merged_train.npz
+    --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz
 
 # 启用 wandb 日志（需要 wandb 账号）
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --num_envs 4096 --max_iterations 30000 \
-    --motion_file data/motion/builds/v1/merged_train.npz \
+    --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz \
     --wandb_project teleopit
 ```
 
@@ -190,7 +197,7 @@ tensorboard --logdir logs/rsl_rl/g1_tracking
 | `--task` | `Tracking-Flat-G1-v0` | 任务名 |
 | `--num_envs` | cfg 默认值 | 并行环境数；多卡时表示每卡环境数 |
 | `--max_iterations` | cfg 默认值 | 训练迭代数 |
-| `--motion_file` | cfg 默认值 | NPZ 运动数据路径（必须是单文件） |
+| `--motion_file` | `data/motion/builds/twist2_full_v1_30hz/merged_train.npz` | NPZ 运动数据路径（必须是单文件） |
 | `--seed` | `42` | 随机种子 |
 | `--wandb_project` | 不设置 | 设置后启用 wandb，否则用 tensorboard |
 | `--experiment_name` | `g1_tracking` | 实验名（影响日志目录） |

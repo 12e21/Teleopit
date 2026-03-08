@@ -9,18 +9,18 @@ Usage:
     # Native window
     python train_mimic/scripts/play.py \
         --checkpoint logs/rsl_rl/g1_tracking/2026-.../model_30000.pt \
-        --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz
+        --motion_file data/motion/builds/twist2_full_v1_30hz/merged_val.npz
 
     # Browser viewer (no display required)
     python train_mimic/scripts/play.py \
         --checkpoint logs/rsl_rl/g1_tracking/2026-.../model_30000.pt \
-        --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
+        --motion_file data/motion/builds/twist2_full_v1_30hz/merged_val.npz \
         --viewer viser
 
     # Record video instead of interactive viewer
     python train_mimic/scripts/play.py \
         --checkpoint logs/rsl_rl/g1_tracking/2026-.../model_30000.pt \
-        --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
+        --motion_file data/motion/builds/twist2_full_v1_30hz/merged_val.npz \
         --video
 """
 
@@ -41,7 +41,7 @@ from mjlab.third_party.isaaclab.isaaclab_tasks.utils.parse_cfg import (
 )
 from mjlab.utils.torch import configure_torch_backends
 from rsl_rl.runners import OnPolicyRunner
-from train_mimic.scripts.train import _to_rsl_rl5_cfg
+from train_mimic.scripts.train import _to_rsl_rl5_cfg, _validate_motion_file
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,6 +65,7 @@ def main() -> None:
     if not os.path.exists(args.checkpoint):
         print(f"Error: checkpoint not found: {args.checkpoint}")
         raise SystemExit(1)
+    _validate_motion_file(args.motion_file)
 
     configure_torch_backends()
 

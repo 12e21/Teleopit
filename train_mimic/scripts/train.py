@@ -4,17 +4,17 @@
 Usage:
     python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
         --num_envs 4096 --max_iterations 30000 \
-        --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz
+        --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz
 
     # Quick verification
     python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
         --num_envs 64 --max_iterations 100 \
-        --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz
+        --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz
 
     # With wandb logging
     python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
         --num_envs 4096 --max_iterations 30000 \
-        --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
+        --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz \
         --wandb_project teleopit
 """
 
@@ -30,6 +30,8 @@ import time
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Sequence
+
+from train_mimic.tasks.tracking.config.g1.flat_env_cfg import DEFAULT_TRAIN_MOTION_FILE
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -69,6 +71,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--video_length", type=int, default=200,
                         help="Number of steps per video clip (default: 200)")
     return parser.parse_args(argv)
+
+
+def _validate_motion_file(motion_file: str) -> None:
+    if os.path.exists(motion_file):
+        return
+    raise FileNotFoundError(
+        f"Motion file not found: {motion_file}. Provide --motion_file explicitly or build a dataset "
+        f"such as {DEFAULT_TRAIN_MOTION_FILE}."
+    )
 
 
 def _to_rsl_rl5_cfg(cfg: dict) -> dict:
@@ -291,6 +302,7 @@ def _run_worker(args: argparse.Namespace) -> None:
         env_cfg.scene.num_envs = args.num_envs
     if args.motion_file is not None:
         env_cfg.commands.motion.motion_file = args.motion_file
+    _validate_motion_file(env_cfg.commands.motion.motion_file)
     if args.max_iterations is not None:
         agent_cfg.max_iterations = args.max_iterations
     if args.experiment_name is not None:

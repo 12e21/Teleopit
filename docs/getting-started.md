@@ -85,7 +85,7 @@ python scripts/ingest_motion.py \
 ```bash
 python train_mimic/scripts/train.py \
   --task Tracking-Flat-G1-v0 \
-  --motion_file data/motion/builds/v1/merged_train.npz
+  --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz
 ```
 
 继续阅读：[`docs/training.md`](training.md)

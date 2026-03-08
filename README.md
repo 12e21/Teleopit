@@ -78,7 +78,7 @@ python scripts/run_sim2real.py controller.policy_path=policy.onnx
 ```bash
 python train_mimic/scripts/train.py \
   --task Tracking-Flat-G1-v0 \
-  --motion_file data/motion/builds/v1/merged_train.npz
+  --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz
 ```
 
 ## Choose Your Path
@@ -88,6 +88,7 @@ python train_mimic/scripts/train.py \
 - **我想理解 Hydra 配置该怎么改**：看 [`docs/configuration.md`](docs/configuration.md)
 - **我想做数据清洗、manifest、build**：看 [`docs/dataset.md`](docs/dataset.md)
 - **我想训练或导出 ONNX policy**：看 [`docs/training.md`](docs/training.md)
+- **我想检查 motion NPZ 标签是否和 FK 一致**：运行 `python scripts/data/check_motion_npz_fk.py --npz <clip.npz>`
 - **我想控制真机 G1**：看 [`docs/sim2real.md`](docs/sim2real.md)
 - **我遇到训练侧问题**：看 [`docs/training_troubleshooting.md`](docs/training_troubleshooting.md)
 

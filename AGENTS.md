@@ -231,7 +231,7 @@ train_mimic/               # Training package (pip install -e '.[train]')
 │   ├── save_onnx.py          # ONNX export
 │   ├── play.py               # Checkpoint playback
 │   ├── benchmark.py          # Policy evaluation with tracking errors
-│   └── convert_pkl_to_npz.py # PKL → NPZ clip conversion and merge
+│   └── convert_pkl_to_npz.py # PKL → NPZ clip conversion and merge (body pose labels rebuilt via MuJoCo FK)
 ├── tasks/                    # Task registration + env/runner cfg
 │   └── tracking/config/g1/   # Tracking-Flat-G1-v0, env cfg, PPO cfg
 ├── configs/
@@ -240,7 +240,8 @@ train_mimic/               # Training package (pip install -e '.[train]')
 scripts/data/                 # Dataset system scripts
 ├── migrate_legacy_dataset.py # Generate manifest.csv from legacy NPZ clips
 ├── validate_dataset.py       # Validate manifest and NPZ integrity
-└── build_dataset.py          # Build merged_train/merged_val from manifest
+├── build_dataset.py          # Build merged_train/merged_val from manifest
+└── check_motion_npz_fk.py    # Validate NPZ body pose labels against MuJoCo FK
 ```
 
 ### Environment Setup & Training
@@ -268,6 +269,7 @@ Quick reference:
  **Checkpoint format**: `logs/rsl_rl/{experiment}/{run}/model_{iter}.pt`
  **Network**: Standard MLP actor/critic (`[512,256,128]`, ELU)
  **Dataset system**: manifest CSV + validate + build; train/play/benchmark consume single NPZ via `--motion_file`
+ **Motion label consistency**: `convert_pkl_to_npz.py` must generate `body_pos_w/body_quat_w/body_ang_vel_w` from MuJoCo FK; use `scripts/data/check_motion_npz_fk.py` to validate clips before large training runs
  **One-way dependency**: train_mimic imports from teleopit, never the reverse
  **Motion file**: single NPZ required by `MotionLoader`; build script outputs `merged_train.npz` / `merged_val.npz`
  **Evaluation**: Use `benchmark.py` to compute 8 tracking errors on trained policies

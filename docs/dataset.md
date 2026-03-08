@@ -49,6 +49,7 @@ CSV 必须包含以下字段：
 2. `migrate_legacy_dataset.py`
 3. `validate_dataset.py`
 4. `build_dataset.py`
+5. `check_motion_npz_fk.py`
 
 核心逻辑位于 `train_mimic/data/dataset_lib.py`，根目录 CLI 仅做参数解析与调用。
 
@@ -143,6 +144,18 @@ python train_mimic/scripts/benchmark.py \
   --motion_file data/motion/builds/v1/merged_val.npz \
   --num_envs 1
 ```
+
+FK 一致性校验：
+
+```bash
+python scripts/data/check_motion_npz_fk.py \
+  --npz data/motion/npz_clips/<source>/<clip>.npz
+```
+
+推荐在以下时机运行：
+- 新接入一批 retarget 数据之后；
+- 修改 `convert_pkl_to_npz.py` 或 FK 相关逻辑之后；
+- 训练出现“很快收敛但渲染很差”时，用来排查监督目标是否自相矛盾。
 
 ## Scale Up 流程（推荐）
 

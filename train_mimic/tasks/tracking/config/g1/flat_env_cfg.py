@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from mjlab.tasks.tracking.config.g1.flat_env_cfg import G1FlatEnvCfg
 
 
+DEFAULT_TRAIN_MOTION_FILE = "data/motion/builds/twist2_full_v1_30hz/merged_train.npz"
+
+
 @dataclass
 class G1FlatTrackingEnvCfg(G1FlatEnvCfg):
     """G1 on flat terrain for whole-body motion tracking.
@@ -22,11 +25,8 @@ class G1FlatTrackingEnvCfg(G1FlatEnvCfg):
         super().__post_init__()
 
         # Default motion file: must be a single NPZ (not a directory).
-        # Use convert_pkl_to_npz.py --merge to create a merged.npz from a dataset dir.
-        # (override via CLI: --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz)
-        self.commands.motion.motion_file = (
-            "data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz"
-        )
+        # Prefer dataset build outputs over legacy twist2_retarget_npz assets.
+        self.commands.motion.motion_file = DEFAULT_TRAIN_MOTION_FILE
 
         # Increase the global simulation constraint buffer as well. mjlab's
         # tracking base config sets sim.njmax=250, which is what triggers the
