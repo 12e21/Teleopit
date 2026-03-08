@@ -24,6 +24,7 @@ NUM=3
 CLIP_CONTAINS=""
 SPLIT="val"
 TASK="Tracking-Flat-G1-v0"
+POLICY_HZ=50
 
 usage() {
     cat <<USAGE
@@ -129,12 +130,13 @@ with manifest.open() as f:
         if clip_contains and clip_contains not in file_rel.lower() and clip_contains not in clip_id.lower():
             continue
         frames = int((row.get('num_frames', '0') or '0').strip())
-        selected.append((clip_id, file_rel, frames))
+        fps = float((row.get('fps', '0') or '0').strip() or 0)
+        selected.append((clip_id, file_rel, frames, fps))
         if len(selected) >= num:
             break
 
-for clip_id, file_rel, frames in selected:
-    print(f"{clip_id}\t{file_rel}\t{frames}")
+for clip_id, file_rel, frames, fps in selected:
+    print(f"{clip_id}\t{file_rel}\t{frames}\t{fps}")
 PY
 )
 
@@ -158,17 +160,25 @@ for row in "${SELECTED[@]}"; do
     clip_id="${row%%$'\t'*}"
     rest="${row#*$'\t'}"
     file_rel="${rest%%$'\t'*}"
+    fps="${rest##*$'\t'}"
+    rest="${rest%$'\t'*}"
     frames="${rest##*$'\t'}"
     motion_file="$PROJECT_ROOT/$file_rel"
     stem="$(basename "$motion_file" .npz)"
     out_dir="$OUT_ROOT/$stem"
     mkdir -p "$out_dir"
 
-    eval_steps="$frames"
-    video_length="$frames"
-    if [[ "$video_length" -gt 600 ]]; then
-        video_length=600
-    fi
+    eval_steps="$(python - <<PY2
+import math
+frames = int(${frames})
+source_fps = float(${fps})
+policy_hz = int(${POLICY_HZ})
+if source_fps <= 0:
+    raise SystemExit("invalid source fps in manifest")
+print(max(1, math.ceil(frames * policy_hz / source_fps)))
+PY2
+)"
+    video_length="$eval_steps"
 
     echo "[$((INDEX + 1))/${#SELECTED[@]}] $stem"
     python "$PROJECT_ROOT/train_mimic/scripts/benchmark.py" \
