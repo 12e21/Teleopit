@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 CHECKPOINT=""
-DATASET_VERSION="twist2_full_v1_30hz"
+DATASET_VERSION="twist2_full"
 NUM=3
 CLIP_CONTAINS=""
 SPLIT="val"
@@ -33,7 +33,7 @@ Usage:
 
 Options:
   --checkpoint <path>       Required. Path to checkpoint (.pt)
-  --dataset_version <name>  Build version under data/motion/builds/ (default: ${DATASET_VERSION})
+  --dataset_version <name>  Build version under data/datasets/builds/ (default: ${DATASET_VERSION})
   --num <n>                 Number of clips to render (default: ${NUM})
   --split <train|val>       Dataset split to render (default: ${SPLIT})
   --clip_contains <text>    Only render clips whose path contains this substring
@@ -101,7 +101,7 @@ if [[ "$SPLIT" != "train" && "$SPLIT" != "val" ]]; then
     exit 1
 fi
 
-MANIFEST_PATH="$PROJECT_ROOT/data/motion/builds/$DATASET_VERSION/manifest_resolved.csv"
+MANIFEST_PATH="$PROJECT_ROOT/data/datasets/builds/$DATASET_VERSION/manifest_resolved.csv"
 if [[ ! -f "$MANIFEST_PATH" ]]; then
     echo "ERROR: manifest_resolved.csv not found: $MANIFEST_PATH"
     exit 1

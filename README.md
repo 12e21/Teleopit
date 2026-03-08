@@ -78,10 +78,13 @@ python scripts/run_sim2real.py controller.policy_path=policy.onnx
 ```bash
 python train_mimic/scripts/train.py \
   --task Tracking-Flat-G1-v0 \
-  --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz
+  --motion_file data/datasets/builds/twist2_full/train.npz
 ```
 
 ## Choose Your Path
+
+- **我想一键重建推荐训练数据集**：运行 `bash scripts/data/build_twist2_full.sh`
+- **我想看新数据系统说明**：看 [`docs/dataset.md`](docs/dataset.md)
 
 - **我想先把一个 BVH 跑起来**：看 [`docs/getting-started.md`](docs/getting-started.md)
 - **我想了解离线 / 在线推理、viewer、录制**：看 [`docs/inference.md`](docs/inference.md)

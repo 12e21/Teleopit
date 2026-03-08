@@ -4,17 +4,17 @@
 Usage:
     python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
         --num_envs 4096 --max_iterations 30000 \
-        --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz
+        --motion_file data/datasets/builds/twist2_full/train.npz
 
     # Quick verification
     python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
         --num_envs 64 --max_iterations 100 \
-        --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz
+        --motion_file data/datasets/builds/twist2_full/train.npz
 
     # With wandb logging
     python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
         --num_envs 4096 --max_iterations 30000 \
-        --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz \
+        --motion_file data/datasets/builds/twist2_full/train.npz \
         --wandb_project teleopit
 """
 

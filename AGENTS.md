@@ -238,9 +238,11 @@ train_mimic/               # Training package (pip install -e '.[train]')
 │   └── twist2_dataset.yaml   # Legacy dataset manifest (not used by current train/play/benchmark main path)
 ├── assets/g1/                # G1 assets
 scripts/data/                 # Dataset system scripts
-├── migrate_legacy_dataset.py # Generate manifest.csv from legacy NPZ clips
-├── validate_dataset.py       # Validate manifest and NPZ integrity
-├── build_dataset.py          # Build merged_train/merged_val from manifest
+├── build_dataset_v2.py       # Recommended one-shot dataset build from YAML spec
+├── build_twist2_full.sh      # Twist2 full wrapper around build_dataset_v2.py
+├── migrate_legacy_dataset.py # Legacy manifest migration from NPZ clips
+├── validate_dataset.py       # Legacy manifest/NPZ validation
+├── build_dataset.py          # Legacy merged_train/merged_val build from manifest
 └── check_motion_npz_fk.py    # Validate NPZ body pose labels against MuJoCo FK
 ```
 
@@ -255,10 +257,10 @@ Quick reference:
  Conda env: `teleopit` (Python 3.10)
  Ingest data: `python scripts/ingest_motion.py --input data/hc_mocap_bvh --source hc_mocap_v1 --bvh_format hc_mocap --manifest data/motion/manifests/v1.csv --npz_root .`
  Build dataset: `python scripts/data/build_dataset.py --manifest data/motion/manifests/v1.csv --dataset_version v1 --npz_root .` (mixed fps use `--target_fps 30`)
- Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 --motion_file data/motion/builds/v1/merged_train.npz --num_envs 4096 --max_iterations 30000`
- Multi-GPU Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 --motion_file data/motion/builds/v1/merged_train.npz --gpu_ids 0 1 2 3 --num_envs 1024 --max_iterations 30000` (`--num_envs` is per-GPU)
+ Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 --motion_file data/datasets/builds/twist2_full/train.npz --num_envs 4096 --max_iterations 30000`
+ Multi-GPU Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 --motion_file data/datasets/builds/twist2_full/train.npz --gpu_ids 0 1 2 3 --num_envs 1024 --max_iterations 30000` (`--num_envs` is per-GPU)
  Export: `python train_mimic/scripts/save_onnx.py --checkpoint <path> --output policy.onnx`
- Eval: `python train_mimic/scripts/benchmark.py --task Tracking-Flat-G1-v0 --checkpoint <path> --motion_file data/motion/builds/v1/merged_val.npz --num_envs 1`
+ Eval: `python train_mimic/scripts/benchmark.py --task Tracking-Flat-G1-v0 --checkpoint <path> --motion_file data/datasets/builds/twist2_full/val.npz --num_envs 1`
 
 ### Key Technical Details
 
@@ -268,7 +270,7 @@ Quick reference:
  **Multi-GPU training**: supported on a single node via `train_mimic/scripts/train.py --gpu_ids ...`; script relaunches itself with distributed workers, and `--num_envs` means per-GPU environments
  **Checkpoint format**: `logs/rsl_rl/{experiment}/{run}/model_{iter}.pt`
  **Network**: Standard MLP actor/critic (`[512,256,128]`, ELU)
- **Dataset system**: manifest CSV + validate + build; train/play/benchmark consume single NPZ via `--motion_file`
+ **Dataset system**: recommended path is YAML spec -> cached NPZ clips -> `train.npz`/`val.npz`; legacy manifest CSV scripts remain for advanced migration/debug
  **Motion label consistency**: `convert_pkl_to_npz.py` must generate `body_pos_w/body_quat_w/body_ang_vel_w` from MuJoCo FK; use `scripts/data/check_motion_npz_fk.py` to validate clips before large training runs
  **One-way dependency**: train_mimic imports from teleopit, never the reverse
  **Motion file**: single NPZ required by `MotionLoader`; build script outputs `merged_train.npz` / `merged_val.npz`

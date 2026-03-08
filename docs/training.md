@@ -87,8 +87,8 @@ python scripts/data/build_dataset.py \
 > `--target_fps` 使用时间轴线性重采样统一帧率；`body_quat_w` 会在插值后重新归一化。
 
 构建完成后，训练/评估分别使用：
-- `data/motion/builds/v1/merged_train.npz`
-- `data/motion/builds/v1/merged_val.npz`
+- `data/datasets/builds/twist2_full/train.npz`
+- `data/datasets/builds/twist2_full/val.npz`
 
 > `ingest_motion.py` 默认行为：新 clip 自动追加 manifest；已存在 `clip_id` 直接报错。需要覆盖时显式加 `--allow_update`。
 
@@ -161,7 +161,7 @@ python scripts/data/check_motion_npz_fk.py \
 # 默认使用 tensorboard 日志（不需要 wandb）
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --num_envs 64 --max_iterations 100 \
-    --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz
+    --motion_file data/datasets/builds/twist2_full/train.npz
 ```
 
 ### 完整训练
@@ -170,18 +170,18 @@ python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
 # Tensorboard 日志（默认）
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --num_envs 4096 --max_iterations 30000 \
-    --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz
+    --motion_file data/datasets/builds/twist2_full/train.npz
 
 # 单机 4 卡训练（--num_envs 表示每卡环境数）
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --gpu_ids 0 1 2 3 \
     --num_envs 1024 --max_iterations 30000 \
-    --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz
+    --motion_file data/datasets/builds/twist2_full/train.npz
 
 # 启用 wandb 日志（需要 wandb 账号）
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --num_envs 4096 --max_iterations 30000 \
-    --motion_file data/motion/builds/twist2_full_v1_30hz/merged_train.npz \
+    --motion_file data/datasets/builds/twist2_full/train.npz \
     --wandb_project teleopit
 ```
 
@@ -197,7 +197,7 @@ tensorboard --logdir logs/rsl_rl/g1_tracking
 | `--task` | `Tracking-Flat-G1-v0` | 任务名 |
 | `--num_envs` | cfg 默认值 | 并行环境数；多卡时表示每卡环境数 |
 | `--max_iterations` | cfg 默认值 | 训练迭代数 |
-| `--motion_file` | `data/motion/builds/twist2_full_v1_30hz/merged_train.npz` | NPZ 运动数据路径（必须是单文件） |
+| `--motion_file` | `data/datasets/builds/twist2_full/train.npz` | NPZ 运动数据路径（必须是单文件） |
 | `--seed` | `42` | 随机种子 |
 | `--wandb_project` | 不设置 | 设置后启用 wandb，否则用 tensorboard |
 | `--experiment_name` | `g1_tracking` | 实验名（影响日志目录） |
@@ -229,7 +229,7 @@ python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --resume logs/rsl_rl/g1_tracking/2026-.../model_10000.pt \
     --max_iterations 30000 \
-    --motion_file data/motion/builds/v1/merged_train.npz
+    --motion_file data/datasets/builds/twist2_full/train.npz
 ```
 
 Checkpoint 保存在 `logs/rsl_rl/g1_tracking/{run_name}/` 目录下。
@@ -262,18 +262,18 @@ mjlab 提供两种 viewer：
 # Native window（需要显示器）
 python train_mimic/scripts/play.py \
     --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
-    --motion_file data/motion/builds/v1/merged_val.npz
+    --motion_file data/datasets/builds/twist2_full/val.npz
 
 # 浏览器 viewer（SSH 时推荐，加 --viewer viser 后访问 localhost:8012）
 python train_mimic/scripts/play.py \
     --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
-    --motion_file data/motion/builds/v1/merged_val.npz \
+    --motion_file data/datasets/builds/twist2_full/val.npz \
     --viewer viser
 
 # 录制视频（保存到 checkpoint 目录的 videos/play/）
 python train_mimic/scripts/play.py \
     --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
-    --motion_file data/motion/builds/v1/merged_val.npz \
+    --motion_file data/datasets/builds/twist2_full/val.npz \
     --video
 ```
 
@@ -470,7 +470,7 @@ python scripts/run_sim.py controller.policy_path=policy.onnx
 python train_mimic/scripts/benchmark.py \
     --task Tracking-Flat-G1-v0 \
     --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
-    --motion_file data/motion/builds/v1/merged_val.npz \
+    --motion_file data/datasets/builds/twist2_full/val.npz \
     --num_envs 1 \
     --num_eval_steps 2000 \
     --warmup_steps 100
@@ -482,7 +482,7 @@ python train_mimic/scripts/benchmark.py \
 MUJOCO_GL=egl python train_mimic/scripts/benchmark.py \
     --task Tracking-Flat-G1-v0 \
     --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
-    --motion_file data/motion/builds/v1/merged_val.npz \
+    --motion_file data/datasets/builds/twist2_full/val.npz \
     --num_envs 1 \
     --video \
     --video_length 600 \

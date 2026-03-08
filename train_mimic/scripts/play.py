@@ -9,18 +9,18 @@ Usage:
     # Native window
     python train_mimic/scripts/play.py \
         --checkpoint logs/rsl_rl/g1_tracking/2026-.../model_30000.pt \
-        --motion_file data/motion/builds/twist2_full_v1_30hz/merged_val.npz
+        --motion_file data/datasets/builds/twist2_full/val.npz
 
     # Browser viewer (no display required)
     python train_mimic/scripts/play.py \
         --checkpoint logs/rsl_rl/g1_tracking/2026-.../model_30000.pt \
-        --motion_file data/motion/builds/twist2_full_v1_30hz/merged_val.npz \
+        --motion_file data/datasets/builds/twist2_full/val.npz \
         --viewer viser
 
     # Record video instead of interactive viewer
     python train_mimic/scripts/play.py \
         --checkpoint logs/rsl_rl/g1_tracking/2026-.../model_30000.pt \
-        --motion_file data/motion/builds/twist2_full_v1_30hz/merged_val.npz \
+        --motion_file data/datasets/builds/twist2_full/val.npz \
         --video
 """
 

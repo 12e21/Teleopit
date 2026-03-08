@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from mjlab.tasks.tracking.config.g1.flat_env_cfg import G1FlatEnvCfg
 
 
-DEFAULT_TRAIN_MOTION_FILE = "data/motion/builds/twist2_full_v1_30hz/merged_train.npz"
+DEFAULT_TRAIN_MOTION_FILE = "data/datasets/builds/twist2_full/train.npz"
 
 
 @dataclass

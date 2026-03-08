@@ -1,0 +1,13 @@
+name: twist2_full
+target_fps: 30
+val_percent: 5
+hash_salt: ""
+sources:
+  - name: OMOMO_g1_GMR
+    input: data/twist2_retarget_pkl/OMOMO_g1_GMR
+  - name: AMASS_g1_GMR8
+    input: data/twist2_retarget_pkl/AMASS_g1_GMR8
+  - name: twist1_to_twist2
+    input: data/twist2_retarget_pkl/twist1_to_twist2
+  - name: v1_v2_v3_g1
+    input: data/twist2_retarget_pkl/v1_v2_v3_g1
