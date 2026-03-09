@@ -95,10 +95,12 @@ def main() -> None:
 
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-    # Load policy
+    # Load policy (force tensorboard to avoid wandb init during playback).
     log_dir = os.path.dirname(args.checkpoint)
+    agent_dict = asdict(agent_cfg)
+    agent_dict["logger"] = "tensorboard"
     RunnerCls = load_runner_cls(args.task) or MjlabOnPolicyRunner
-    runner = RunnerCls(env, asdict(agent_cfg), log_dir=log_dir, device=device)
+    runner = RunnerCls(env, agent_dict, log_dir=log_dir, device=device)
     runner.load(args.checkpoint, map_location=device)
     policy = runner.get_inference_policy(device=device)
 

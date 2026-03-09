@@ -14,10 +14,8 @@
 
 ### 依赖版本说明
 
-训练框架使用 **rsl_rl_lib 5.x**（当前验证版本：`5.0.1`）。rsl_rl 5.x 对观测配置的 API 做了调整：
-
-- `obs_groups` 中的 actor 观测 key 从 `"policy"` 改为 `"actor"`
-- `train_mimic/scripts/train.py` 的 `_to_rsl_rl5_cfg()` 已处理此兼容性转换，旧版 mjlab 配置（使用 `"policy"` key）可正常工作
+- **mjlab ≥ 1.2.0**：MuJoCo Warp 仿真 + manager-based 环境架构
+- **rsl_rl_lib 5.x**（当前验证版本：`5.0.1`）：PPO 训练框架，支持 separate actor/critic 网络
 
 ### 安装步骤
 
@@ -52,39 +50,36 @@ python -c "import train_mimic.tasks; print('training OK')"
 
 ## 运动数据准备
 
-### 推荐：使用 Manifest 数据系统
+### 推荐：YAML Spec 驱动的数据集构建
 
-为支持后续持续扩容（scale up）并保证可复现，推荐使用 `manifest + validate + build` 三步流程管理训练数据。  
-详细说明见 [数据系统文档](dataset.md)。
-
-快速示例：
+使用 `build_dataset_v2.py` 从 YAML spec 构建训练数据集：
 
 ```bash
-# 1) ingestion（推荐）：自动处理 BVH/PKL/NPZ -> NPZ clips，并自动追加 manifest
-python scripts/ingest_motion.py \
-    --input data/hc_mocap_bvh \
-    --source hc_mocap_v1 \
-    --bvh_format hc_mocap \
-    --manifest data/motion/manifests/v1.csv \
-    --npz_root .
+# 构建完整数据集（从 YAML spec 驱动，自动 PKL→NPZ 转换 + 合并）
+python scripts/data/build_dataset_v2.py --spec train_mimic/configs/datasets/twist2_full.yaml
 
-# 2) 校验 manifest 与 clip 质量
-python scripts/data/validate_dataset.py \
-    --manifest data/motion/manifests/v1.csv \
-    --npz_root .
+# 强制重建（清除缓存）
+python scripts/data/build_dataset_v2.py --spec train_mimic/configs/datasets/twist2_full.yaml --force
 
-# 3) 构建 train/val merged 产物
-python scripts/data/build_dataset.py \
-    --manifest data/motion/manifests/v1.csv \
-    --dataset_version v1 \
-    --npz_root . \
-    --build_root data/motion/builds
-
-# 若 manifest 中包含混合 fps 数据，使用 --target_fps 统一后再合并
-# python scripts/data/build_dataset.py ... --target_fps 30
+# 并行转换（4 线程）
+python scripts/data/build_dataset_v2.py --spec train_mimic/configs/datasets/twist2_full.yaml --jobs 4
 ```
 
-> `--target_fps` 使用时间轴线性重采样统一帧率；`body_quat_w` 会在插值后重新归一化。
+YAML spec 格式示例（`train_mimic/configs/datasets/twist2_full.yaml`）：
+
+```yaml
+name: twist2_full
+target_fps: 30
+val_percent: 5
+hash_salt: ""
+sources:
+  - name: OMOMO_g1_GMR
+    input: data/twist2_retarget_pkl/OMOMO_g1_GMR
+  - name: AMASS_g1_GMR8
+    input: data/twist2_retarget_pkl/AMASS_g1_GMR8
+```
+
+详细说明见 [数据系统文档](dataset.md)。
 
 构建完成后，训练/评估分别使用：
 - `data/datasets/builds/twist2_full/train.npz`
@@ -298,15 +293,15 @@ python scripts/run_sim.py controller.policy_path=policy.onnx
 
 ### 网络架构
 
-- 标准 rsl_rl `ActorCritic` MLP
-- Actor 网络：[512, 256, 128]，ELU 激活
-- 观测维度：160D（与 mjlab TrackingEnv policy 观测一致）
-- 动作维度：29D（关节位置目标）
-- Empirical normalization（替代自定义 Normalizer）
+- Separate Actor/Critic MLP（`RslRlModelCfg`）
+- Actor 网络：[512, 256, 128]，ELU 激活，输入 160D → 输出 29D
+- Critic 网络：[512, 256, 128]，ELU 激活，输入 286D → 输出 1D
+- Empirical normalization（rsl_rl 内置运行均值/方差归一化）
+- GaussianDistribution, init_std=1.0
 
 ### 观测结构
 
-观测定义来自 mjlab 内置的 `TrackingEnvCfg`（[源码](https://github.com/mujocolab/mjlab)）。
+观测定义在 `train_mimic/tasks/tracking/tracking_env_cfg.py`（已从 mjlab 复制到本地）。
 
 **Policy 观测**（actor 输入，带噪声）：
 
@@ -330,7 +325,7 @@ python scripts/run_sim.py controller.policy_path=policy.onnx
 
 ### 奖励函数
 
-奖励定义来自 mjlab 内置的 `TrackingEnvCfg`，DeepMimic 指数核模式：`R = exp(-error² / std²)`
+奖励定义在 `train_mimic/tasks/tracking/tracking_env_cfg.py`，BeyondMimic 指数核模式：`R = exp(-error² / std²)`
 
 | 奖励 | 权重 | std | 说明 |
 |------|------|-----|------|
@@ -479,14 +474,21 @@ python train_mimic/scripts/benchmark.py \
 可选：录制评估视频（用于直观观察动作质量）：
 
 ```bash
-MUJOCO_GL=egl python train_mimic/scripts/benchmark.py \
+# 单段连续视频
+python train_mimic/scripts/benchmark.py \
     --task Tracking-Flat-G1-v0 \
     --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
     --motion_file data/datasets/builds/twist2_full/val.npz \
-    --num_envs 1 \
-    --video \
-    --video_length 600 \
+    --num_envs 1 --video --video_length 600
+
+# 多段独立 clip（每个 clip 采样不同动作片段）
+python train_mimic/scripts/benchmark.py ... \
+    --video --num_clips 10 --video_length 250 \
     --video_folder benchmark_results/videos
+
+# 分屏视频（左=参考动作视角，右=机器人视角）
+python train_mimic/scripts/benchmark.py ... \
+    --video --split --num_clips 10 --video_length 250
 ```
 
 如果你在 conda 环境里录视频时遇到 EGL / PyOpenGL 初始化错误，推荐先补齐 conda 侧依赖：
@@ -515,6 +517,45 @@ benchmark 脚本会输出：
 ## Troubleshooting
 
 常见问题请参考 [训练问题排查文档](training_troubleshooting.md)。
+
+---
+
+## 训练代码结构
+
+任务通过 `register_mjlab_task("Tracking-Flat-G1-v0", ...)` 注册到 mjlab registry，训练/推理脚本通过 `--task` 查询配置。
+
+```
+train_mimic/tasks/tracking/
+├── tracking_env_cfg.py              # 基础 env 配置工厂（obs/reward/term/event/sim）
+├── mdp/
+│   ├── commands.py                  # MotionLoader + MotionCommand（动作加载/采样/播放）
+│   ├── observations.py              # anchor_pos_b, anchor_ori_b, body_pos_b, body_ori_b
+│   ├── rewards.py                   # 6个跟踪奖励 + self_collision
+│   ├── terminations.py              # anchor_pos/ori, ee_body_pos 终止条件
+│   └── metrics.py                   # MPKPE, EE误差等评估指标
+├── rl/
+│   └── runner.py                    # MotionTrackingOnPolicyRunner（自动ONNX导出）
+├── config/g1/
+│   ├── __init__.py                  # 注册 Tracking-Flat-G1-v0
+│   ├── flat_env_cfg.py              # G1 机器人特化配置（关节/body/scale）
+│   └── rl_cfg.py                    # PPO + 网络结构配置
+└── config/g1_v1/
+    ├── __init__.py                  # 注册 Tracking-Flat-G1-v1（general motion 优化）
+    ├── flat_env_cfg.py              # uniform sampling, 放宽 termination, 短 episode
+    └── rl_cfg.py                    # experiment_name=g1_tracking_v1
+```
+
+**v0 vs v1 配置差异**：
+
+| 项 | v0 | v1 | 理由 |
+|---|---|---|---|
+| sampling_mode | adaptive | uniform | 避免 adaptive 死亡螺旋 |
+| anchor_pos threshold | 0.25 | 0.5 | 放宽躯干容忍 |
+| anchor_ori threshold | 0.8 | 1.2 | 放宽朝向容忍 |
+| ee_body_pos threshold | 0.25 | 0.5 | 放宽末端容忍 |
+| episode_length_s | 10.0 | 5.0 | 更容易拿到 time_out 成功 |
+
+> **注意**：tracking task 的 mdp 模块已从 mjlab 复制到本地 `train_mimic/tasks/tracking/mdp/`，可自由修改调试。基础设施类（`ManagerBasedRlEnvCfg`、`SceneCfg` 等）仍然来自 mjlab。
 
 ---
 

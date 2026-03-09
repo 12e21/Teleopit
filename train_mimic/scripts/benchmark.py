@@ -4,13 +4,20 @@
 Runs policy rollout for a fixed number of evaluation steps and reports
 distribution statistics for motion-tracking errors.
 
-Can optionally render and save a benchmark video for qualitative inspection.
+Can optionally render and save benchmark videos for qualitative inspection.
 
 Usage:
+    # Benchmark only (no video)
     python train_mimic/scripts/benchmark.py --task Tracking-Flat-G1-v0 \
         --checkpoint logs/rsl_rl/g1_tracking/.../model_30000.pt \
         --motion_file data/datasets/builds/twist2_full/val.npz \
         --num_envs 1
+
+    # Single video (one continuous clip)
+    python train_mimic/scripts/benchmark.py ... --video --video_length 500
+
+    # Multiple separate clip videos
+    python train_mimic/scripts/benchmark.py ... --video --num_clips 10 --video_length 250
 """
 
 from __future__ import annotations
@@ -26,35 +33,70 @@ import numpy as np
 from train_mimic.scripts.train import _validate_motion_file
 
 
-def _make_tracking_camera(mujoco_module: object, target_xyz: np.ndarray):
-    cam = mujoco_module.MjvCamera()
-    cam.type = mujoco_module.mjtCamera.mjCAMERA_FREE
-    cam.lookat[:] = np.asarray(target_xyz, dtype=np.float64)
-    cam.distance = 3.0
-    cam.azimuth = 135.0
-    cam.elevation = -15.0
-    return cam
+def _render_frame(unwrapped: object, split: bool = False, _cmd: object = None) -> np.ndarray:
+    """Render a frame using the environment's offline renderer (ghost included).
 
+    Args:
+        unwrapped: The unwrapped ManagerBasedRlEnv.
+        split: If True, render split-screen with camera lookat on ref (left)
+               and robot (right). Same scene, different camera targets.
+        _cmd: MotionCommand term (required when split=True).
+    """
+    if not split:
+        frame = unwrapped.render()
+        if frame is None:
+            raise RuntimeError("render() returned None; ensure render_mode='rgb_array'")
+        return frame
 
-def _render_split_frame(unwrapped: object, command: object, mujoco_module: object) -> np.ndarray:
-    sim = getattr(unwrapped, "sim")
-    sim.update_render()
-    renderer = sim.renderer
+    import mujoco
 
-    ref_target = np.asarray(command.anchor_pos_w[0].detach().cpu().numpy(), dtype=np.float64)
-    robot_target = np.asarray(command.robot_anchor_pos_w[0].detach().cpu().numpy(), dtype=np.float64)
+    renderer = unwrapped._offline_renderer
+    cam = renderer._cam
+    env_idx = max(0, min(int(renderer._cfg.env_idx), int(unwrapped.sim.data.nworld) - 1))
 
-    ref_cam = _make_tracking_camera(mujoco_module, ref_target)
-    renderer.update_scene(data=sim.mj_data, camera=ref_cam)
-    unwrapped.update_visualizers(renderer.scene)
-    ref_frame = renderer.render().copy()
+    # Full scene update (robot + ghost via debug vis).
+    debug_callback = (
+        unwrapped.update_visualizers if hasattr(unwrapped, "update_visualizers") else None
+    )
+    renderer.update(unwrapped.sim.data, debug_vis_callback=debug_callback)
 
-    robot_cam = _make_tracking_camera(mujoco_module, robot_target)
-    renderer.update_scene(data=sim.mj_data, camera=robot_cam)
-    unwrapped.update_visualizers(renderer.scene)
-    robot_frame = renderer.render().copy()
+    # Save original camera state.
+    orig_type = cam.type
+    orig_trackbodyid = cam.trackbodyid
+    orig_lookat = cam.lookat.copy()
 
-    return np.concatenate((ref_frame, robot_frame), axis=1)
+    # --- Left: camera follows ref pose ---
+    ref_pos = _cmd.body_pos_w[env_idx, 0].cpu().numpy()
+    cam.type = mujoco.mjtCamera.mjCAMERA_FREE.value
+    cam.trackbodyid = -1
+    cam.lookat[:] = [ref_pos[0], ref_pos[1], 0.8]
+    renderer._renderer.update_scene(renderer._data, camera=cam)
+    # Re-apply ghost geoms after update_scene reset.
+    if debug_callback is not None:
+        from mjlab.viewer.native.visualizer import MujocoNativeDebugVisualizer
+        vis = MujocoNativeDebugVisualizer(
+            renderer._renderer.scene, renderer._model, env_idx=renderer._cfg.env_idx
+        )
+        debug_callback(vis)
+    frame_ref = renderer._renderer.render()
+
+    # --- Right: camera follows robot ---
+    robot_pos = unwrapped.sim.data.qpos[env_idx, :3].cpu().numpy()
+    cam.lookat[:] = [robot_pos[0], robot_pos[1], 0.8]
+    renderer._renderer.update_scene(renderer._data, camera=cam)
+    if debug_callback is not None:
+        vis = MujocoNativeDebugVisualizer(
+            renderer._renderer.scene, renderer._model, env_idx=renderer._cfg.env_idx
+        )
+        debug_callback(vis)
+    frame_robot = renderer._renderer.render()
+
+    # Restore camera.
+    cam.type = orig_type
+    cam.trackbodyid = orig_trackbodyid
+    cam.lookat[:] = orig_lookat
+
+    return np.concatenate([frame_ref, frame_robot], axis=1)
 
 
 def _to_float(value: object, torch_module: object) -> float:
@@ -100,11 +142,15 @@ def parse_args() -> argparse.Namespace:
                         help="Warmup steps ignored from metric aggregation (default: 100)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--video", action="store_true",
-                        help="Record split-screen benchmark video (left=reference, right=robot)")
+                        help="Record benchmark video(s)")
+    parser.add_argument("--num_clips", type=int, default=1,
+                        help="Number of separate video clips to render (default: 1)")
     parser.add_argument("--video_length", type=int, default=600,
-                        help="Recorded video length in steps (default: 600)")
+                        help="Steps per video clip (default: 600)")
     parser.add_argument("--video_folder", type=str, default=None,
-                        help="Output folder for benchmark video")
+                        help="Output folder for benchmark video(s)")
+    parser.add_argument("--split", action="store_true",
+                        help="Render split-screen video with two camera angles")
     parser.add_argument("--device", type=str, default=None)
     return parser.parse_args()
 
@@ -153,6 +199,11 @@ def main() -> int:
     env_cfg.commands["motion"].motion_file = args.motion_file
     env_cfg.commands["motion"].pose_range = {}
     env_cfg.commands["motion"].velocity_range = {}
+
+    # Use uniform sampling so each reset picks a different motion segment.
+    if args.video and args.num_clips > 1:
+        env_cfg.commands["motion"].sampling_mode = "uniform"
+
     step_dt = float(env_cfg.decimation) * float(env_cfg.sim.mujoco.timestep)
     required_episode_s = args.num_eval_steps * step_dt + 1.0
     if float(env_cfg.episode_length_s) < required_episode_s:
@@ -181,36 +232,45 @@ def main() -> int:
 
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-    video_writer = None
-    video_path: Path | None = None
-    video_steps = 0
-    mujoco = None
-    if args.video:
-        import imageio.v2 as imageio
-        import mujoco as mujoco_module
-
-        video_folder = args.video_folder or "benchmark_results/videos"
-        Path(video_folder).mkdir(parents=True, exist_ok=True)
-        video_path = Path(video_folder) / "benchmark_split.mp4"
-        video_steps = min(args.video_length, args.num_eval_steps)
-        video_fps = max(1, int(round(1.0 / env.unwrapped.step_dt)))
-        video_writer = imageio.get_writer(str(video_path), fps=video_fps, quality=8)
-        mujoco = mujoco_module
-        print(f"[INFO] Recording split benchmark video to: {video_path}")
-        print("[INFO] Split layout: left=reference, right=robot")
-
     log_dir = os.path.dirname(args.checkpoint)
+    agent_dict = asdict(agent_cfg)
+    agent_dict["logger"] = "tensorboard"  # Never init wandb for evaluation.
     RunnerCls = load_runner_cls(args.task) or MjlabOnPolicyRunner
-    runner = RunnerCls(env, asdict(agent_cfg), log_dir=log_dir, device=device)
+    runner = RunnerCls(env, agent_dict, log_dir=log_dir, device=device)
     runner.load(args.checkpoint, map_location=device)
     policy = runner.get_inference_policy(device=device)
 
-    # Benchmark
+    # --- Video recording setup ---
+    video_writer = None
+    video_folder: Path | None = None
+    video_paths: list[Path] = []
+    clip_step_counter = 0
+    clip_idx = 0
+
+    if args.video:
+        import imageio.v2 as imageio
+
+        video_folder = Path(args.video_folder or "benchmark_results/videos")
+        video_folder.mkdir(parents=True, exist_ok=True)
+        video_fps = max(1, int(round(1.0 / env.unwrapped.step_dt)))
+
+        def _open_clip_writer(idx: int):
+            nonlocal video_writer, clip_step_counter
+            if args.num_clips == 1:
+                path = video_folder / "benchmark.mp4"
+            else:
+                path = video_folder / f"clip_{idx:03d}.mp4"
+            video_paths.append(path)
+            video_writer = imageio.get_writer(str(path), fps=video_fps, quality=8)
+            clip_step_counter = 0
+            print(f"[INFO] Recording clip {idx + 1}/{args.num_clips}: {path}")
+
+        _open_clip_writer(0)
+
+    # --- Benchmark loop ---
     obs = env.get_observations()
     unwrapped = env.unwrapped
-
     cmd = unwrapped.command_manager.get_term("motion")
-    prev_motion_step = int(cmd.time_steps[0].item()) if hasattr(cmd, "time_steps") else -1
     metric_keys = sorted(cmd.metrics.keys())
     metric_series: dict[str, list[float]] = {k: [] for k in metric_keys}
     reward_series: list[float] = []
@@ -228,27 +288,29 @@ def main() -> int:
             obs, rewards, dones, extras = env.step(actions)
             ep_len_buf += 1
 
-            curr_motion_step = int(cmd.time_steps[0].item()) if hasattr(cmd, "time_steps") else prev_motion_step
-            motion_wrapped = prev_motion_step >= 0 and curr_motion_step < prev_motion_step
+            # Record video frame.
+            if video_writer is not None and clip_idx < args.num_clips:
+                frame = _render_frame(env.unwrapped, split=args.split, _cmd=cmd)
+                video_writer.append_data(frame)
+                clip_step_counter += 1
 
-            done_mask = dones > 0
-            if video_writer is not None and mujoco is not None and step < video_steps:
-                if motion_wrapped:
-                    print(f"[INFO] Stopping video at step {step + 1}: motion clip reached the end.")
+                # Close current clip and open next one.
+                if clip_step_counter >= args.video_length:
                     video_writer.close()
                     video_writer = None
-                else:
-                    frame = _render_split_frame(env.unwrapped, cmd, mujoco)
-                    video_writer.append_data(frame)
+                    clip_idx += 1
+                    if clip_idx < args.num_clips:
+                        # Reset env to sample a new motion segment.
+                        obs, _ = env.reset()
+                        ep_len_buf[:] = 0
+                        _open_clip_writer(clip_idx)
 
-            prev_motion_step = curr_motion_step
+            done_mask = dones > 0
             num_done = int(done_mask.sum().item())
             if num_done > 0:
                 done_events += num_done
                 completed_episode_lengths.extend(ep_len_buf[done_mask].detach().cpu().tolist())
                 ep_len_buf[done_mask] = 0
-                # Pull reset-time logs (episode reward breakdown, termination stats, etc.)
-                # from the underlying environment.
                 extras_log = extras.get("log", {}) if isinstance(extras, dict) else {}
                 if isinstance(extras_log, dict):
                     for key, value in extras_log.items():
@@ -262,7 +324,6 @@ def main() -> int:
             for key in metric_keys:
                 metric_series[key].append(_to_float(cmd.metrics[key], torch))
 
-            # Wrapper may expose timeout flags in extras for infinite-horizon settings.
             if isinstance(extras, dict) and "time_outs" in extras and isinstance(extras["time_outs"], torch.Tensor):
                 timeout_events += int(extras["time_outs"].sum().item())
     finally:
@@ -270,6 +331,7 @@ def main() -> int:
             video_writer.close()
         env.close()
 
+    # --- Report ---
     effective_steps = args.num_eval_steps - args.warmup_steps
     if effective_steps <= 0:
         raise RuntimeError("No effective evaluation steps. Increase --num_eval_steps or decrease --warmup_steps.")
@@ -379,8 +441,8 @@ def main() -> int:
 
     print(f"\nSaved summary to: {output_path}")
     print(f"Saved detailed json to: {json_path}")
-    if video_path is not None:
-        print(f"Saved split video to: {video_path}")
+    for vp in video_paths:
+        print(f"Saved video: {vp}")
     return 0
 
 
