@@ -128,17 +128,14 @@ def main() -> int:
         os.environ["PYOPENGL_PLATFORM"] = "egl"
         print("[INFO] --video enabled, PYOPENGL_PLATFORM not set. Defaulting to PYOPENGL_PLATFORM=egl.")
 
-    import gymnasium as gym
     import torch
 
-    import train_mimic.tasks  # noqa: F401 -- triggers gym.register()
-    from mjlab.rl import RslRlVecEnvWrapper
-    from mjlab.third_party.isaaclab.isaaclab_tasks.utils.parse_cfg import (
-        load_cfg_from_registry,
-    )
+    import mjlab.tasks  # noqa: F401 -- populates mjlab built-in tasks
+    import train_mimic.tasks  # noqa: F401 -- registers our custom tasks
+    from mjlab.envs import ManagerBasedRlEnv
+    from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
+    from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
     from mjlab.utils.torch import configure_torch_backends
-    from rsl_rl.runners import OnPolicyRunner
-    from train_mimic.scripts.train import _to_rsl_rl5_cfg
 
     if not os.path.exists(args.checkpoint):
         print(f"Error: checkpoint not found: {args.checkpoint}")
@@ -146,34 +143,32 @@ def main() -> int:
 
     configure_torch_backends()
 
-    # Load configs
-    env_cfg = load_cfg_from_registry(args.task, "env_cfg_entry_point")
-    agent_cfg = load_cfg_from_registry(args.task, "rl_cfg_entry_point")
+    # Load configs (play=True disables corruption, push_robot, etc.)
+    env_cfg = load_env_cfg(args.task, play=True)
+    agent_cfg = load_rl_cfg(args.task)
 
     # Configure for benchmark
     env_cfg.seed = args.seed
     env_cfg.scene.num_envs = args.num_envs
-    env_cfg.commands.motion.motion_file = args.motion_file
-    env_cfg.observations.policy.enable_corruption = False
-    env_cfg.events.push_robot = None
-    env_cfg.commands.motion.pose_range = {}
-    env_cfg.commands.motion.velocity_range = {}
+    env_cfg.commands["motion"].motion_file = args.motion_file
+    env_cfg.commands["motion"].pose_range = {}
+    env_cfg.commands["motion"].velocity_range = {}
     step_dt = float(env_cfg.decimation) * float(env_cfg.sim.mujoco.timestep)
     required_episode_s = args.num_eval_steps * step_dt + 1.0
     if float(env_cfg.episode_length_s) < required_episode_s:
         env_cfg.episode_length_s = required_episode_s
     if args.video:
-        env_cfg.terminations.time_out = None
-        env_cfg.terminations.anchor_pos = None
-        env_cfg.terminations.anchor_ori = None
-        env_cfg.terminations.ee_body_pos = None
+        env_cfg.terminations.pop("time_out", None)
+        env_cfg.terminations.pop("anchor_pos", None)
+        env_cfg.terminations.pop("anchor_ori", None)
+        env_cfg.terminations.pop("ee_body_pos", None)
 
     device = args.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
 
     # Create env
     render_mode = "rgb_array" if args.video else None
     try:
-        env = gym.make(args.task, cfg=env_cfg, device=device, render_mode=render_mode)
+        env = ManagerBasedRlEnv(cfg=env_cfg, device=device, render_mode=render_mode)
     except Exception as exc:
         if args.video:
             raise RuntimeError(
@@ -205,7 +200,8 @@ def main() -> int:
         print("[INFO] Split layout: left=reference, right=robot")
 
     log_dir = os.path.dirname(args.checkpoint)
-    runner = OnPolicyRunner(env, _to_rsl_rl5_cfg(asdict(agent_cfg)), log_dir=log_dir, device=device)
+    RunnerCls = load_runner_cls(args.task) or MjlabOnPolicyRunner
+    runner = RunnerCls(env, asdict(agent_cfg), log_dir=log_dir, device=device)
     runner.load(args.checkpoint, map_location=device)
     policy = runner.get_inference_policy(device=device)
 

@@ -2,17 +2,17 @@
 """Train G1 whole-body tracking policy with mjlab + rsl_rl PPO.
 
 Usage:
-    python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
+    python train_mimic/scripts/train.py \
         --num_envs 4096 --max_iterations 30000 \
         --motion_file data/datasets/builds/twist2_full/train.npz
 
     # Quick verification
-    python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
+    python train_mimic/scripts/train.py \
         --num_envs 64 --max_iterations 100 \
         --motion_file data/datasets/builds/twist2_full/train.npz
 
     # With wandb logging
-    python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
+    python train_mimic/scripts/train.py \
         --num_envs 4096 --max_iterations 30000 \
         --motion_file data/datasets/builds/twist2_full/train.npz \
         --wandb_project teleopit
@@ -31,12 +31,15 @@ from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Sequence
 
-from train_mimic.tasks.tracking.config.g1.flat_env_cfg import DEFAULT_TRAIN_MOTION_FILE
+from train_mimic.tasks.tracking.config.g1.flat_env_cfg import (
+    DEFAULT_TASK,
+    DEFAULT_TRAIN_MOTION_FILE,
+)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train G1 tracking policy (mjlab).")
-    parser.add_argument("--task", type=str, default="Tracking-Flat-G1-v0")
+    parser.add_argument("--task", type=str, default=DEFAULT_TASK)
     parser.add_argument("--num_envs", type=int, default=None)
     parser.add_argument("--max_iterations", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
@@ -80,36 +83,6 @@ def _validate_motion_file(motion_file: str) -> None:
         f"Motion file not found: {motion_file}. Provide --motion_file explicitly or build a dataset "
         f"such as {DEFAULT_TRAIN_MOTION_FILE}."
     )
-
-
-def _to_rsl_rl5_cfg(cfg: dict) -> dict:
-    """Convert mjlab's RslRlOnPolicyRunnerCfg dict to rsl_rl 5.x format.
-
-    mjlab uses a single "policy" key (ActorCritic style), but rsl_rl 5.x
-    expects separate "actor" and "critic" keys with MLPModel config.
-    """
-    policy = cfg.pop("policy")
-    if "policy" in cfg.get("obs_groups", {}):
-        cfg["obs_groups"]["actor"] = cfg["obs_groups"].pop("policy")
-
-    cfg["actor"] = {
-        "class_name": "rsl_rl.models.MLPModel",
-        "hidden_dims": policy["actor_hidden_dims"],
-        "activation": policy["activation"],
-        "obs_normalization": policy["actor_obs_normalization"],
-        "distribution_cfg": {
-            "class_name": "rsl_rl.modules.distribution.GaussianDistribution",
-            "init_std": policy["init_noise_std"],
-            "std_type": policy.get("noise_std_type", "scalar"),
-        },
-    }
-    cfg["critic"] = {
-        "class_name": "rsl_rl.models.MLPModel",
-        "hidden_dims": policy["critic_hidden_dims"],
-        "activation": policy["activation"],
-        "obs_normalization": policy["critic_obs_normalization"],
-    }
-    return cfg
 
 
 def _is_distributed_env(env: dict[str, str] | None = None) -> bool:
@@ -247,19 +220,17 @@ def _launch_multi_gpu(args: argparse.Namespace, argv: Sequence[str]) -> None:
         raise subprocess.CalledProcessError(return_code, command)
 
 
-def _import_training_stack() -> tuple[Any, Any, Any, Any, Any, Any]:
-    import gymnasium as gym
+def _import_training_stack() -> tuple[Any, ...]:
     import torch
 
-    import train_mimic.tasks  # noqa: F401 -- triggers gym.register()
+    import mjlab.tasks  # noqa: F401 -- populates mjlab built-in tasks
+    import train_mimic.tasks  # noqa: F401 -- registers our custom tasks
+    from mjlab.envs import ManagerBasedRlEnv
     from mjlab.rl import RslRlVecEnvWrapper
-    from mjlab.third_party.isaaclab.isaaclab_tasks.utils.parse_cfg import (
-        load_cfg_from_registry,
-    )
+    from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
     from mjlab.utils.torch import configure_torch_backends
-    from rsl_rl.runners import OnPolicyRunner
 
-    return gym, torch, RslRlVecEnvWrapper, load_cfg_from_registry, configure_torch_backends, OnPolicyRunner
+    return torch, ManagerBasedRlEnv, RslRlVecEnvWrapper, load_env_cfg, load_rl_cfg, load_runner_cls, configure_torch_backends
 
 
 def _destroy_process_group(torch_module: Any) -> None:
@@ -273,7 +244,7 @@ def _destroy_process_group(torch_module: Any) -> None:
 
 
 def _run_worker(args: argparse.Namespace) -> None:
-    gym, torch, RslRlVecEnvWrapper, load_cfg_from_registry, configure_torch_backends, OnPolicyRunner = _import_training_stack()
+    torch, ManagerBasedRlEnv, RslRlVecEnvWrapper, load_env_cfg, load_rl_cfg, load_runner_cls, configure_torch_backends = _import_training_stack()
     env: Any | None = None
     rank = os.environ.get("RANK", "0")
 
@@ -293,16 +264,21 @@ def _run_worker(args: argparse.Namespace) -> None:
     configure_torch_backends()
 
     # Load configs from registry
-    env_cfg = load_cfg_from_registry(args.task, "env_cfg_entry_point")
-    agent_cfg = load_cfg_from_registry(args.task, "rl_cfg_entry_point")
+    env_cfg = load_env_cfg(args.task)
+    agent_cfg = load_rl_cfg(args.task)
+    runner_cls = load_runner_cls(args.task)
+
+    # Default to tensorboard (mjlab defaults to wandb)
+    if args.wandb_project is None:
+        agent_cfg.logger = "tensorboard"
 
     # CLI overrides
     env_cfg.seed = args.seed
     if args.num_envs is not None:
         env_cfg.scene.num_envs = args.num_envs
     if args.motion_file is not None:
-        env_cfg.commands.motion.motion_file = args.motion_file
-    _validate_motion_file(env_cfg.commands.motion.motion_file)
+        env_cfg.commands["motion"].motion_file = args.motion_file
+    _validate_motion_file(env_cfg.commands["motion"].motion_file)
     if args.max_iterations is not None:
         agent_cfg.max_iterations = args.max_iterations
     if args.experiment_name is not None:
@@ -322,9 +298,10 @@ def _run_worker(args: argparse.Namespace) -> None:
     # render_mode only needed for video recording
     render_mode = "rgb_array" if args.video else None
     try:
-        env = gym.make(args.task, cfg=env_cfg, device=device, render_mode=render_mode)
+        env = ManagerBasedRlEnv(cfg=env_cfg, device=device, render_mode=render_mode)
         if args.video:
-            env = gym.wrappers.RecordVideo(
+            from mjlab.utils.wrappers import VideoRecorder
+            env = VideoRecorder(
                 env,
                 video_folder=os.path.join(log_dir, "videos", "train"),
                 step_trigger=lambda step: step % (args.video_interval * env_cfg.decimation) == 0,
@@ -333,7 +310,9 @@ def _run_worker(args: argparse.Namespace) -> None:
             )
         env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-        runner = OnPolicyRunner(env, _to_rsl_rl5_cfg(asdict(agent_cfg)), log_dir=log_dir, device=device)
+        from mjlab.rl import MjlabOnPolicyRunner
+        RunnerCls = runner_cls if runner_cls is not None else MjlabOnPolicyRunner
+        runner = RunnerCls(env, asdict(agent_cfg), log_dir=log_dir, device=device)
 
         if args.resume is not None:
             print(f"[INFO] Resuming from: {args.resume}")

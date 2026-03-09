@@ -30,23 +30,22 @@ import argparse
 import os
 from dataclasses import asdict
 
-import gymnasium as gym
 import torch
 
-import train_mimic.tasks  # noqa: F401 -- triggers gym.register()
-from mjlab.rl import RslRlVecEnvWrapper
-from mjlab.viewer import NativeMujocoViewer, ViserViewer
-from mjlab.third_party.isaaclab.isaaclab_tasks.utils.parse_cfg import (
-    load_cfg_from_registry,
-)
+import mjlab.tasks  # noqa: F401 -- populates mjlab built-in tasks
+import train_mimic.tasks  # noqa: F401 -- registers our custom tasks
+from mjlab.envs import ManagerBasedRlEnv
+from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
+from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.utils.torch import configure_torch_backends
-from rsl_rl.runners import OnPolicyRunner
-from train_mimic.scripts.train import _to_rsl_rl5_cfg, _validate_motion_file
+from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
+from train_mimic.scripts.train import _validate_motion_file
+from train_mimic.tasks.tracking.config.g1.flat_env_cfg import DEFAULT_TASK
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Play trained G1 tracking policy.")
-    parser.add_argument("--task", type=str, default="Tracking-Flat-G1-v0")
+    parser.add_argument("--task", type=str, default=DEFAULT_TASK)
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
     parser.add_argument("--motion_file", type=str, required=True, help="Path to NPZ motion file")
     parser.add_argument("--num_envs", type=int, default=1)
@@ -69,26 +68,24 @@ def main() -> None:
 
     configure_torch_backends()
 
-    # Load configs
-    env_cfg = load_cfg_from_registry(args.task, "env_cfg_entry_point")
-    agent_cfg = load_cfg_from_registry(args.task, "rl_cfg_entry_point")
+    # Load configs (play=True disables corruption, push_robot, etc.)
+    env_cfg = load_env_cfg(args.task, play=True)
+    agent_cfg = load_rl_cfg(args.task)
 
     # Override for playback
     env_cfg.scene.num_envs = args.num_envs
-    env_cfg.commands.motion.motion_file = args.motion_file
-    env_cfg.observations.policy.enable_corruption = False
-    env_cfg.events.push_robot = None
-    env_cfg.episode_length_s = int(1e9)
+    env_cfg.commands["motion"].motion_file = args.motion_file
 
     device = args.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
 
     # render_mode only needed for video recording
     render_mode = "rgb_array" if args.video else None
-    env = gym.make(args.task, cfg=env_cfg, device=device, render_mode=render_mode)
+    env = ManagerBasedRlEnv(cfg=env_cfg, device=device, render_mode=render_mode)
 
     if args.video:
+        from mjlab.utils.wrappers import VideoRecorder
         log_dir = os.path.dirname(args.checkpoint)
-        env = gym.wrappers.RecordVideo(
+        env = VideoRecorder(
             env,
             video_folder=os.path.join(log_dir, "videos", "play"),
             step_trigger=lambda step: step == 0,
@@ -100,7 +97,8 @@ def main() -> None:
 
     # Load policy
     log_dir = os.path.dirname(args.checkpoint)
-    runner = OnPolicyRunner(env, _to_rsl_rl5_cfg(asdict(agent_cfg)), log_dir=log_dir, device=device)
+    RunnerCls = load_runner_cls(args.task) or MjlabOnPolicyRunner
+    runner = RunnerCls(env, asdict(agent_cfg), log_dir=log_dir, device=device)
     runner.load(args.checkpoint, map_location=device)
     policy = runner.get_inference_policy(device=device)
 
@@ -114,7 +112,7 @@ def main() -> None:
     elif args.viewer == "native":
         NativeMujocoViewer(env, policy).run()
     else:
-        ViserViewer(env, policy).run()
+        ViserPlayViewer(env, policy).run()
 
     env.close()
 

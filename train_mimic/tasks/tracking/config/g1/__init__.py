@@ -1,15 +1,16 @@
-"""G1 tracking task registration via gymnasium."""
+"""G1 tracking task registration."""
 
-import gymnasium as gym
+from mjlab.tasks.registry import register_mjlab_task
 
-from .flat_env_cfg import G1FlatTrackingEnvCfg
+from train_mimic.tasks.tracking.rl import MotionTrackingOnPolicyRunner
 
-gym.register(
-    id="Tracking-Flat-G1-v0",
-    entry_point="mjlab.envs:ManagerBasedRlEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.flat_env_cfg:G1FlatTrackingEnvCfg",
-        "rl_cfg_entry_point": f"{__name__}.rl_cfg:G1TrackingPPORunnerCfg",
-    },
+from .flat_env_cfg import make_g1_flat_tracking_env_cfg
+from .rl_cfg import make_g1_tracking_ppo_runner_cfg
+
+register_mjlab_task(
+    task_id="Tracking-Flat-G1-v0",
+    env_cfg=make_g1_flat_tracking_env_cfg(),
+    play_env_cfg=make_g1_flat_tracking_env_cfg(play=True),
+    rl_cfg=make_g1_tracking_ppo_runner_cfg(),
+    runner_cls=MotionTrackingOnPolicyRunner,
 )
