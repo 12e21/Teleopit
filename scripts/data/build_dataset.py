@@ -124,8 +124,14 @@ def main() -> int:
 
     train_out = build_dir / "merged_train.npz"
     val_out = build_dir / "merged_val.npz"
-    train_stats = merge_npz_files(split_files["train"], train_out, target_fps=target_fps)
-    val_stats = merge_npz_files(split_files["val"], val_out, target_fps=target_fps)
+    train_weights = [e.weight for e, _, _ in split_rows["train"]]
+    val_weights = [e.weight for e, _, _ in split_rows["val"]]
+    train_stats = merge_npz_files(
+        split_files["train"], train_out, target_fps=target_fps, weights=train_weights
+    )
+    val_stats = merge_npz_files(
+        split_files["val"], val_out, target_fps=target_fps, weights=val_weights
+    )
 
     resolved_manifest_path = build_dir / "manifest_resolved.csv"
     with resolved_manifest_path.open("w", encoding="utf-8", newline="") as f:

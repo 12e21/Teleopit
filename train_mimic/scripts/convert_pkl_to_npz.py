@@ -162,45 +162,27 @@ def convert_pkl_to_npz(
 def merge_npz_dir(npz_dir: str, output_path: str) -> None:
     """Merge all NPZ files in a directory into a single NPZ by concatenating on time axis.
 
-    mjlab's MotionLoader requires a single NPZ file. Use this after batch-converting
-    a dataset directory to concatenate all clips into one training file.
+    Delegates to :func:`dataset_lib.merge_npz_files` so that the output contains
+    clip-aware metadata (``clip_starts``, ``clip_lengths``, ``clip_fps``,
+    ``clip_weights``).
 
     Args:
         npz_dir: Directory containing .npz files (searched recursively)
         output_path: Output merged .npz file path
     """
+    from train_mimic.data.dataset_lib import merge_npz_files
+
     npz_files = sorted(f for f in Path(npz_dir).rglob("*.npz") if f.name != "merged.npz")
     if not npz_files:
         print(f"No NPZ files found in {npz_dir}")
         raise SystemExit(1)
 
     print(f"Merging {len(npz_files)} NPZ files from {npz_dir} -> {output_path}")
-
-    arrays: dict[str, list[np.ndarray]] = {
-        "joint_pos": [], "joint_vel": [],
-        "body_pos_w": [], "body_quat_w": [],
-        "body_lin_vel_w": [], "body_ang_vel_w": [],
-    }
-    fps = None
-    body_names = None
-
-    for npz_file in npz_files:
-        data = np.load(npz_file, allow_pickle=True)
-        if fps is None:
-            fps = int(data["fps"])
-            body_names = data["body_names"]
-        for key in arrays:
-            arrays[key].append(data[key])
-
-    merged = {key: np.concatenate(vals, axis=0) for key, vals in arrays.items()}
-    merged["fps"] = fps
-    merged["body_names"] = body_names
-
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    np.savez(output_path, **merged)
-
-    T = merged["joint_pos"].shape[0]
-    print(f"Done. Merged {len(npz_files)} clips, total {T} frames ({T / fps:.1f} s at {fps} fps).")
+    stats = merge_npz_files(npz_files, Path(output_path))
+    print(
+        f"Done. Merged {stats['clips']} clips, total {stats['frames']} frames "
+        f"({stats['duration_s']:.1f} s at {stats['fps']} fps)."
+    )
 
 
 def main() -> None:

@@ -328,10 +328,18 @@ def _resample_along_time(arr: np.ndarray, new_t: int) -> np.ndarray:
 
 
 def merge_npz_files(
-    npz_files: list[Path], output_path: Path, *, target_fps: int | None = None
+    npz_files: list[Path],
+    output_path: Path,
+    *,
+    target_fps: int | None = None,
+    weights: list[float] | None = None,
 ) -> dict[str, Any]:
     if not npz_files:
         raise ValueError("no npz files to merge")
+    if weights is not None and len(weights) != len(npz_files):
+        raise ValueError(
+            f"weights length ({len(weights)}) != npz_files length ({len(npz_files)})"
+        )
 
     arrays: dict[str, list[np.ndarray]] = {
         "joint_pos": [],
@@ -343,8 +351,10 @@ def merge_npz_files(
     }
     fps: int | None = None
     body_names: np.ndarray[Any, Any] | None = None
+    per_clip_fps: list[int] = []
+    per_clip_weights: list[float] = []
 
-    for p in npz_files:
+    for i, p in enumerate(npz_files):
         d = np.load(p, allow_pickle=True)
         cur_fps = int(d["fps"])
         if cur_fps <= 0:
@@ -385,6 +395,10 @@ def merge_npz_files(
                 raise ValueError(f"inconsistent fps in merge: {p} has {cur_fps}, expected {fps}")
             if body_names is None or not np.array_equal(cur_body_names, body_names):
                 raise ValueError(f"inconsistent body_names in merge: {p}")
+
+        per_clip_fps.append(cur_fps)
+        per_clip_weights.append(weights[i] if weights is not None else 1.0)
+
         arrays["joint_pos"].append(joint_pos)
         arrays["joint_vel"].append(joint_vel)
         arrays["body_pos_w"].append(body_pos_w)
@@ -392,9 +406,21 @@ def merge_npz_files(
         arrays["body_lin_vel_w"].append(body_lin_vel_w)
         arrays["body_ang_vel_w"].append(body_ang_vel_w)
 
+    # Clip boundary metadata
+    clip_lengths = np.array(
+        [arr.shape[0] for arr in arrays["joint_pos"]], dtype=np.int64
+    )
+    clip_starts = np.zeros(len(clip_lengths), dtype=np.int64)
+    if len(clip_lengths) > 1:
+        clip_starts[1:] = np.cumsum(clip_lengths[:-1])
+
     merged = {k: np.concatenate(v, axis=0) for k, v in arrays.items()}
     merged["fps"] = int(fps)  # type: ignore[arg-type]
     merged["body_names"] = body_names
+    merged["clip_starts"] = clip_starts
+    merged["clip_lengths"] = clip_lengths
+    merged["clip_fps"] = np.array(per_clip_fps, dtype=np.int64)
+    merged["clip_weights"] = np.array(per_clip_weights, dtype=np.float64)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(output_path, **merged)
@@ -403,6 +429,7 @@ def merge_npz_files(
     return {
         "output": str(output_path),
         "clips": len(npz_files),
+        "num_clips": len(npz_files),
         "frames": total_frames,
         "fps": int(merged["fps"]),
         "duration_s": float(total_frames / max(int(merged["fps"]), 1)),

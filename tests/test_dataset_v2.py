@@ -36,6 +36,47 @@ def test_load_dataset_spec_parses_yaml(tmp_path: Path) -> None:
     assert spec.val_percent == 5
     assert len(spec.sources) == 1
     assert spec.sources[0].name == "a"
+    assert spec.sources[0].weight == 1.0
+
+
+def test_load_dataset_spec_parses_source_weight(tmp_path: Path) -> None:
+    spec_path = tmp_path / "weighted.yaml"
+    spec_path.write_text(
+        """name: demo
+
+target_fps: 30
+val_percent: 5
+hash_salt: ""
+sources:
+  - name: a
+    input: data/a
+    weight: 2.5
+""",
+        encoding="utf-8",
+    )
+
+    spec = load_dataset_spec(spec_path)
+    assert spec.sources[0].weight == 2.5
+
+
+def test_load_dataset_spec_rejects_non_positive_weight(tmp_path: Path) -> None:
+    spec_path = tmp_path / "bad_weight.yaml"
+    spec_path.write_text(
+        """name: demo
+
+target_fps: 30
+val_percent: 5
+hash_salt: ""
+sources:
+  - name: a
+    input: data/a
+    weight: 0
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="non-positive weight"):
+        load_dataset_spec(spec_path)
 
 
 def test_assign_splits_guarantees_non_empty_train_and_val() -> None:

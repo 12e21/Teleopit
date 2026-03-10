@@ -32,6 +32,7 @@ DEFAULT_FK_SAMPLE_FRAMES = 16
 class DatasetSourceSpec:
     name: str
     input: str
+    weight: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,7 @@ class DatasetClipRow:
     fps: int
     resolved_split: str
     resolved_npz_path: str
+    weight: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -109,10 +111,13 @@ def load_dataset_spec(path: str | Path) -> DatasetSpec:
             raise ValueError(f'source entry missing non-empty name: {spec_path}')
         if not source_input:
             raise ValueError(f'source {source_name!r} missing non-empty input: {spec_path}')
+        source_weight = float(raw.get('weight', 1.0))
+        if source_weight <= 0:
+            raise ValueError(f'source {source_name!r} has non-positive weight: {source_weight}')
         if source_name in seen_names:
             raise ValueError(f'duplicate source name in spec: {source_name}')
         seen_names.add(source_name)
-        sources.append(DatasetSourceSpec(name=source_name, input=source_input))
+        sources.append(DatasetSourceSpec(name=source_name, input=source_input, weight=source_weight))
 
     return DatasetSpec(
         name=name,
@@ -227,6 +232,7 @@ def collect_clip_rows(spec: DatasetSpec, *, paths: DatasetPaths) -> list[Dataset
                     fps=meta.fps,
                     resolved_split='',
                     resolved_npz_path=str(npz_path),
+                    weight=source.weight,
                 )
             )
     return assign_splits(rows, spec.val_percent, spec.hash_salt)
@@ -244,6 +250,7 @@ def assign_splits(rows: list[DatasetClipRow], val_percent: int, hash_salt: str) 
             fps=row.fps,
             resolved_split=hash_split(row.clip_id, val_percent, hash_salt),
             resolved_npz_path=row.resolved_npz_path,
+            weight=row.weight,
         )
         for row in rows
     ]
@@ -271,6 +278,7 @@ def assign_splits(rows: list[DatasetClipRow], val_percent: int, hash_salt: str) 
                 fps=row.fps,
                 resolved_split=split,
                 resolved_npz_path=row.resolved_npz_path,
+                weight=row.weight,
             )
         )
     return adjusted
@@ -321,6 +329,7 @@ def write_manifest_resolved(rows: list[DatasetClipRow], build_dir: Path) -> Path
             'fps',
             'resolved_split',
             'resolved_npz_path',
+            'weight',
         ])
         for row in sorted(rows, key=lambda item: item.clip_id):
             writer.writerow([
@@ -331,15 +340,19 @@ def write_manifest_resolved(rows: list[DatasetClipRow], build_dir: Path) -> Path
                 row.fps,
                 row.resolved_split,
                 row.resolved_npz_path,
+                row.weight,
             ])
     return out_path
 
 
-def _rows_for_split(rows: list[DatasetClipRow], split: str) -> list[Path]:
-    selected = [Path(row.resolved_npz_path) for row in rows if row.resolved_split == split]
+def _rows_for_split(
+    rows: list[DatasetClipRow], split: str
+) -> tuple[list[Path], list[float]]:
+    selected = [(Path(row.resolved_npz_path), row.weight) for row in rows if row.resolved_split == split]
     if not selected:
         raise ValueError(f'no clips for split={split}')
-    return selected
+    files, weights = zip(*selected)
+    return list(files), list(weights)
 
 
 def build_dataset_from_spec(
@@ -358,14 +371,18 @@ def build_dataset_from_spec(
     if not skip_fk_check:
         fk_checks = run_sample_fk_checks(rows)
 
-    train_files = _rows_for_split(rows, 'train')
-    val_files = _rows_for_split(rows, 'val')
+    train_files, train_weights = _rows_for_split(rows, 'train')
+    val_files, val_weights = _rows_for_split(rows, 'val')
     paths.build_dir.mkdir(parents=True, exist_ok=True)
     train_out = paths.build_dir / 'train.npz'
     val_out = paths.build_dir / 'val.npz'
 
-    train_stats = merge_npz_files(train_files, train_out, target_fps=spec.target_fps)
-    val_stats = merge_npz_files(val_files, val_out, target_fps=spec.target_fps)
+    train_stats = merge_npz_files(
+        train_files, train_out, target_fps=spec.target_fps, weights=train_weights
+    )
+    val_stats = merge_npz_files(
+        val_files, val_out, target_fps=spec.target_fps, weights=val_weights
+    )
 
     manifest_path = write_manifest_resolved(rows, paths.build_dir)
     report: dict[str, Any] = {
