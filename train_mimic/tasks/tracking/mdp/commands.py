@@ -537,17 +537,9 @@ class MotionCommand(CommandTerm):
         durations = self.motion.clip_duration_s[self.motion_ids]
         exceeded = self.motion_times >= durations
 
-        if self.cfg.loop_motion:
-            safe_dur = torch.clamp(durations, min=1e-6)
-            self.motion_times = torch.where(
-                exceeded,
-                torch.fmod(self.motion_times, safe_dur),
-                self.motion_times,
-            )
-        else:
-            env_ids = torch.where(exceeded)[0]
-            if env_ids.numel() > 0:
-                self._resample_command(env_ids)
+        env_ids = torch.where(exceeded)[0]
+        if env_ids.numel() > 0:
+            self._resample_command(env_ids)
 
         self._refresh_frame_cache()
 
@@ -671,8 +663,6 @@ class MotionCommandCfg(CommandTermCfg):
     adaptive_uniform_ratio: float = 0.1
     adaptive_alpha: float = 0.001
     sampling_mode: Literal["adaptive", "uniform", "start"] = "adaptive"
-    loop_motion: bool = False
-    """When a clip ends, loop within the same clip (True) or resample a new clip (False)."""
 
     @dataclass
     class VizCfg:
