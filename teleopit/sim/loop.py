@@ -407,6 +407,13 @@ class SimulationLoop:
                 mimic_obs = extract_mimic_obs(qpos=qpos, last_qpos=self._last_retarget_qpos, dt=1.0 / self.policy_hz)
 
                 state = self.robot.get_state()
+
+                # Align motion root XY to robot's current XY position.
+                # The retargeter outputs BVH world coordinates, but the policy
+                # was trained with env_origins alignment (small anchor offsets).
+                robot_xy = np.asarray(state.base_pos[:2], dtype=np.float64)
+                qpos[0:2] = robot_xy
+
                 obs = self._build_observation(
                     state=state,
                     mimic_obs=mimic_obs,
@@ -420,15 +427,27 @@ class SimulationLoop:
 
                 target_dof_pos = self._compute_target_dof_pos(action)
 
+                # Check if robot uses built-in PD (position target mode)
+                builtin_pd = getattr(self.robot, "_builtin_pd", False)
+
                 torque: Float32Array = np.zeros((self._num_actions,), dtype=np.float32)
-                for _ in range(self.decimation):
-                    pd_state = self.robot.get_state()
-                    dof_pos = np.asarray(pd_state.qpos, dtype=np.float32)[: self._num_actions]
-                    dof_vel = np.asarray(pd_state.qvel, dtype=np.float32)[: self._num_actions]
-                    torque = np.asarray((target_dof_pos - dof_pos) * self._kps - dof_vel * self._kds, dtype=np.float32)
-                    torque = np.asarray(np.clip(torque, -self._torque_limits, self._torque_limits), dtype=np.float32)
-                    self.robot.set_action(torque)
-                    self.robot.step()
+                if builtin_pd:
+                    # Built-in PD: pass position target directly to MuJoCo actuator.
+                    # MuJoCo computes force = kp*(ctrl - qpos) - kd*qvel internally,
+                    # which participates in implicit integration for stability.
+                    self.robot.set_action(target_dof_pos)
+                    for _ in range(self.decimation):
+                        self.robot.step()
+                else:
+                    # External PD: compute torque manually each substep.
+                    for _ in range(self.decimation):
+                        pd_state = self.robot.get_state()
+                        dof_pos = np.asarray(pd_state.qpos, dtype=np.float32)[: self._num_actions]
+                        dof_vel = np.asarray(pd_state.qvel, dtype=np.float32)[: self._num_actions]
+                        torque = np.asarray((target_dof_pos - dof_pos) * self._kps - dof_vel * self._kds, dtype=np.float32)
+                        torque = np.asarray(np.clip(torque, -self._torque_limits, self._torque_limits), dtype=np.float32)
+                        self.robot.set_action(torque)
+                        self.robot.step()
 
                 final_state = self.robot.get_state()
                 self._publish(mimic_obs, action, final_state)

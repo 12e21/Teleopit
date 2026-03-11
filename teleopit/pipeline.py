@@ -107,6 +107,16 @@ class TeleopPipeline:
             if default_angles is not None:
                 _cfg_set(controller_cfg, "default_dof_pos", list(default_angles))
 
+        # Propagate per-joint action_scale from robot config to controller
+        robot_action_scale = _cfg_get(robot_cfg, "action_scale", None)
+        if robot_action_scale is not None:
+            try:
+                scale_list = list(robot_action_scale)
+                if len(scale_list) > 1:
+                    _cfg_set(controller_cfg, "action_scale", scale_list)
+            except TypeError:
+                pass  # scalar, keep controller default
+
         self.controller = RLPolicyController(controller_cfg)
         self.obs_builder = self._build_obs_builder(robot_cfg)
         self.bus = InProcessBus()

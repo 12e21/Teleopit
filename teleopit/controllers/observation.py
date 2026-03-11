@@ -206,15 +206,19 @@ def _quat_rotate_np(q: FloatVec, v: FloatVec) -> FloatVec:
 
 
 def _quat_to_rot6d_np(q: FloatVec) -> FloatVec:
-    """Convert wxyz quaternion to 6D rotation (first 2 columns of rotation matrix)."""
+    """Convert wxyz quaternion to 6D rotation matching PyTorch matrix[:, :2].reshape(-1).
+
+    Training uses matrix[:, :2].reshape(-1) which gives [r00, r01, r10, r11, r20, r21]
+    (first two elements of each row), NOT column-major order.
+    """
     w, x, y, z = q[0], q[1], q[2], q[3]
     r00 = 1 - 2 * (y * y + z * z)
-    r10 = 2 * (x * y + w * z)
-    r20 = 2 * (x * z - w * y)
     r01 = 2 * (x * y - w * z)
+    r10 = 2 * (x * y + w * z)
     r11 = 1 - 2 * (x * x + z * z)
+    r20 = 2 * (x * z - w * y)
     r21 = 2 * (y * z + w * x)
-    return np.array([r00, r10, r20, r01, r11, r21], dtype=np.float32)
+    return np.array([r00, r01, r10, r11, r20, r21], dtype=np.float32)
 
 
 @final
