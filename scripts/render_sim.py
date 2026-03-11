@@ -169,23 +169,27 @@ def render_bvh(
     fig_w, fig_h = width / dpi, height / dpi
     fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
     ax = fig.add_subplot(111, projection="3d")
+    ax.set_zlim(0.0, 2.0)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+    ax.view_init(elev=20, azim=135)
 
     frames: list[np.ndarray] = []
     t0 = time.time()
+    dynamic_artists: list[Any] = []
 
     for step in range(num_frames):
-        ax.cla()
+        for artist in dynamic_artists:
+            artist.remove()
+        dynamic_artists.clear()
+
         pos = positions[step]
         root = pos[0]
 
         ax.set_xlim(root[0] - 1.0, root[0] + 1.0)
         ax.set_ylim(root[1] - 1.0, root[1] + 1.0)
-        ax.set_zlim(0.0, 2.0)
-        ax.set_xlabel("X")
-        ax.set_ylabel("Y")
-        ax.set_zlabel("Z")
         ax.set_title(f"BVH Skeleton — frame {step}")
-        ax.view_init(elev=20, azim=135)
 
         for j in range(len(parents)):
             p = parents[j]
@@ -194,9 +198,11 @@ def render_bvh(
             xs = [pos[p, 0], pos[j, 0]]
             ys = [pos[p, 1], pos[j, 1]]
             zs = [pos[p, 2], pos[j, 2]]
-            ax.plot(xs, ys, zs, "b-", linewidth=2)
+            dynamic_artists.extend(ax.plot(xs, ys, zs, "b-", linewidth=2))
 
-        ax.scatter(pos[:, 0], pos[:, 1], pos[:, 2], c="red", s=15, depthshade=True)
+        dynamic_artists.append(
+            ax.scatter(pos[:, 0], pos[:, 1], pos[:, 2], c="red", s=15, depthshade=True)
+        )
 
         fig.canvas.draw()
         buf = fig.canvas.buffer_rgba()
@@ -358,12 +364,13 @@ def render_sim2sim(
     retargeter = cast(Any, pipeline.retargeter)
     loop = pipeline.loop
 
+    input_fps = float(getattr(input_prov, "fps", fps))
     n_bvh = len(input_prov)
-    bvh_duration = n_bvh / fps
+    bvh_duration = n_bvh / input_fps
     if max_frames > 0:
-        bvh_duration = min(bvh_duration, max_frames / fps)
+        bvh_duration = min(bvh_duration, max_frames / input_fps)
     num_policy_steps = int(bvh_duration * POLICY_HZ)
-    print(f"  [sim2sim] {n_bvh} BVH frames @ {fps}fps = {bvh_duration:.1f}s")
+    print(f"  [sim2sim] {n_bvh} BVH frames @ {input_fps:g}fps = {bvh_duration:.1f}s")
     print(
         f"  [sim2sim] Running {num_policy_steps} policy steps @ {POLICY_HZ}Hz, PD @ {PD_HZ}Hz (decimation={loop.decimation})"
     )
@@ -373,10 +380,11 @@ def render_sim2sim(
     frames: list[np.ndarray] = []
     t0 = time.time()
     last_bvh_idx = -1
+    torque = np.zeros((loop._num_actions,), dtype=np.float32)
 
     for step in range(num_policy_steps):
         policy_time = step / POLICY_HZ
-        bvh_idx = min(int(policy_time * fps), n_bvh - 1)
+        bvh_idx = min(int(policy_time * input_fps), n_bvh - 1)
 
         if bvh_idx != last_bvh_idx:
             raw_frame = bvh_frames_all[bvh_idx]
@@ -393,6 +401,8 @@ def render_sim2sim(
         )
 
         state = pipeline.robot.get_state()
+        # Match SimulationLoop: align motion root XY to the robot's current base XY.
+        qpos[0:2] = np.asarray(state.base_pos[:2], dtype=np.float64)
         obs = loop._build_observation(
             state=state,
             mimic_obs=mimic_obs,
@@ -406,16 +416,23 @@ def render_sim2sim(
 
         target_dof_pos = loop._compute_target_dof_pos(action)
 
-        for _ in range(loop.decimation):
-            pd_state = pipeline.robot.get_state()
-            dof_pos = np.asarray(pd_state.qpos, dtype=np.float32)[: loop._num_actions]
-            dof_vel = np.asarray(pd_state.qvel, dtype=np.float32)[: loop._num_actions]
-            torque = (target_dof_pos - dof_pos) * loop._kps - dof_vel * loop._kds
-            torque = np.clip(torque, -loop._torque_limits, loop._torque_limits).astype(
-                np.float32
-            )
-            pipeline.robot.set_action(torque)
-            pipeline.robot.step()
+        if getattr(pipeline.robot, "_builtin_pd", False):
+            # Built-in PD actuators expect position targets, not manually computed torques.
+            pipeline.robot.set_action(target_dof_pos)
+            for _ in range(loop.decimation):
+                pipeline.robot.step()
+            torque = np.zeros((loop._num_actions,), dtype=np.float32)
+        else:
+            for _ in range(loop.decimation):
+                pd_state = pipeline.robot.get_state()
+                dof_pos = np.asarray(pd_state.qpos, dtype=np.float32)[: loop._num_actions]
+                dof_vel = np.asarray(pd_state.qvel, dtype=np.float32)[: loop._num_actions]
+                torque = (target_dof_pos - dof_pos) * loop._kps - dof_vel * loop._kds
+                torque = np.clip(torque, -loop._torque_limits, loop._torque_limits).astype(
+                    np.float32
+                )
+                pipeline.robot.set_action(torque)
+                pipeline.robot.step()
 
         loop._last_action = action
         loop._last_retarget_qpos = qpos.copy()
@@ -440,6 +457,7 @@ def render_sim2sim(
 
 
 def main() -> None:
+    available_passes = ("bvh", "retarget", "sim2sim")
     parser = argparse.ArgumentParser(
         description="Render BVH + retarget + sim2sim verification videos"
     )
@@ -451,7 +469,7 @@ def main() -> None:
         help="Max video duration in seconds (0=full BVH)",
     )
     parser.add_argument("--width", type=int, default=640, help="Video width")
-    parser.add_argument("--height", type=int, default=360, help="Video height")
+    parser.add_argument("--height", type=int, default=368, help="Video height")
     parser.add_argument(
         "--policy",
         type=str,
@@ -460,6 +478,14 @@ def main() -> None:
     )
     parser.add_argument(
         "--format", type=str, default="lafan1", help="BVH format (lafan1 or hc_mocap)"
+    )
+    parser.add_argument(
+        "--render",
+        type=str,
+        nargs="+",
+        choices=available_passes,
+        default=list(available_passes),
+        help="Render only the selected outputs (default: all)",
     )
     args = parser.parse_args()
 
@@ -487,47 +513,54 @@ def main() -> None:
         + (f", cap {args.max_seconds:.0f}s)" if max_frames else ", full)")
     )
 
-    bvh_out = output_dir / f"{stem}_bvh.mp4"
-    print(f"\n=== Pass 1: BVH Skeleton ===")
-    render_bvh(
-        bvh_path=bvh_path,
-        output_path=bvh_out,
-        width=args.width,
-        height=args.height,
-        fps=fps,
-        max_frames=max_frames,
-        bvh_format=args.format,
-    )
+    rendered_outputs: list[tuple[str, Path]] = []
 
-    retarget_out = output_dir / f"{stem}_retarget.mp4"
-    print(f"\n=== Pass 2: GMR Retarget ===")
-    render_retarget(
-        bvh_path=bvh_path,
-        output_path=retarget_out,
-        width=args.width,
-        height=args.height,
-        fps=fps,
-        max_frames=max_frames,
-        bvh_format=args.format,
-    )
+    if "bvh" in args.render:
+        bvh_out = output_dir / f"{stem}_bvh.mp4"
+        print(f"\n=== Pass 1: BVH Skeleton ===")
+        render_bvh(
+            bvh_path=bvh_path,
+            output_path=bvh_out,
+            width=args.width,
+            height=args.height,
+            fps=fps,
+            max_frames=max_frames,
+            bvh_format=args.format,
+        )
+        rendered_outputs.append(("BVH", bvh_out))
 
-    sim2sim_out = output_dir / f"{stem}_sim2sim.mp4"
-    print(f"\n=== Pass 3: Sim2Sim ===")
-    render_sim2sim(
-        bvh_path=bvh_path,
-        output_path=sim2sim_out,
-        width=args.width,
-        height=args.height,
-        fps=fps,
-        max_frames=max_frames,
-        bvh_format=args.format,
-        policy_path=args.policy,
-    )
+    if "retarget" in args.render:
+        retarget_out = output_dir / f"{stem}_retarget.mp4"
+        print(f"\n=== Pass 2: GMR Retarget ===")
+        render_retarget(
+            bvh_path=bvh_path,
+            output_path=retarget_out,
+            width=args.width,
+            height=args.height,
+            fps=fps,
+            max_frames=max_frames,
+            bvh_format=args.format,
+        )
+        rendered_outputs.append(("Retarget", retarget_out))
+
+    if "sim2sim" in args.render:
+        sim2sim_out = output_dir / f"{stem}_sim2sim.mp4"
+        print(f"\n=== Pass 3: Sim2Sim ===")
+        render_sim2sim(
+            bvh_path=bvh_path,
+            output_path=sim2sim_out,
+            width=args.width,
+            height=args.height,
+            fps=fps,
+            max_frames=max_frames,
+            bvh_format=args.format,
+            policy_path=args.policy,
+        )
+        rendered_outputs.append(("Sim2Sim", sim2sim_out))
 
     print(f"\nDone! Videos saved to {output_dir}/")
-    print(f"  BVH:      {bvh_out.name}")
-    print(f"  Retarget: {retarget_out.name}")
-    print(f"  Sim2Sim:  {sim2sim_out.name}")
+    for label, path in rendered_outputs:
+        print(f"  {label:<9}: {path.name}")
 
 
 if __name__ == "__main__":
