@@ -1,6 +1,6 @@
 policy_path: ""  # must be provided: ONNX exported from train_mimic checkpoint
 device: "cpu"
 
-action_scale: 0.5
+action_scale: null  # inherited from robot config; set explicitly to override
 clip_range: [-10.0, 10.0]
 default_dof_pos: null

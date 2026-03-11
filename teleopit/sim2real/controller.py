@@ -126,6 +126,20 @@ class Sim2RealController:
                 elif isinstance(controller_cfg, dict):
                     controller_cfg["default_dof_pos"] = list(default_angles)
 
+        # Propagate action_scale from robot config only when controller
+        # has no explicit value (null). Explicit overrides are preserved.
+        if _cfg_get(controller_cfg, "action_scale", None) is None:
+            robot_action_scale = _cfg_get(robot_cfg, "action_scale", None)
+            if robot_action_scale is not None:
+                try:
+                    scale_val = list(robot_action_scale)
+                except TypeError:
+                    scale_val = robot_action_scale
+                if hasattr(controller_cfg, "__setattr__"):
+                    controller_cfg.action_scale = scale_val
+                elif isinstance(controller_cfg, dict):
+                    controller_cfg["action_scale"] = scale_val
+
         # Resolve policy path
         policy_path = str(_cfg_get(controller_cfg, "policy_path", ""))
         if policy_path and not Path(policy_path).is_absolute():

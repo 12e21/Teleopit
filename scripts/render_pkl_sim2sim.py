@@ -169,9 +169,11 @@ def render_pkl_sim2sim(
         sys.exit(1)
     controller_cfg.policy_path = str(policy_path)
     controller_cfg.default_dof_pos = list(robot_cfg.default_angles)
+    if OmegaConf.select(controller_cfg, "action_scale") is None:
+        controller_cfg.action_scale = list(robot_cfg.action_scale)
 
     POLICY_HZ = int(OmegaConf.select(default_cfg, "policy_hz", default=50))
-    PD_HZ = int(OmegaConf.select(default_cfg, "pd_hz", default=1000))
+    PD_HZ = int(OmegaConf.select(default_cfg, "pd_hz", default=200))
     DECIMATION = PD_HZ // POLICY_HZ
 
     robot = MuJoCoRobot(robot_cfg)

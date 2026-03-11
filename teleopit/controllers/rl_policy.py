@@ -62,8 +62,9 @@ class RLPolicyController:
                 "Only mjlab-aligned 160D policies exported from train_mimic are supported."
             )
 
+        raw_scale = self._cfg_get(cfg, "action_scale", None)
         self.action_scale = np.asarray(
-            self._cfg_get(cfg, "action_scale", 1.0),
+            raw_scale if raw_scale is not None else 1.0,
             dtype=np.float32,
         )
         self.default_dof_pos = np.asarray(
