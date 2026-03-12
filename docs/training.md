@@ -215,6 +215,7 @@ tensorboard --logdir logs/rsl_rl/g1_tracking
 - `Tracking-Flat-G1-v0`：默认 sim2sim 训练任务，actor 输入为 160D。
 - `Tracking-Flat-G1-v0-NoStateEst`：真机部署使用的 154D 训练任务，actor 去掉 `motion_anchor_pos_b` 和 `base_lin_vel`。
 - `Tracking-Flat-G1-v1` / `Tracking-Flat-G1-v1-NoStateEst`：对应 general-motion 优化版本。
+- `Tracking-Flat-G1-v2` / `Tracking-Flat-G1-v2-NoStateEst`：与 `v0` 保持一致，只把 `sampling_mode` 固定为 `uniform`，用于避开 adaptive 对坏 clip 的放大。
 
 ### 多卡训练说明
 
@@ -537,7 +538,7 @@ benchmark 脚本会输出：
 
 ## 训练代码结构
 
-任务通过 `register_mjlab_task(...)` 注册到 mjlab registry，训练/推理脚本通过 `--task` 查询配置。当前包含 `Tracking-Flat-G1-v0`、`Tracking-Flat-G1-v0-NoStateEst`、`Tracking-Flat-G1-v1`、`Tracking-Flat-G1-v1-NoStateEst`。
+任务通过 `register_mjlab_task(...)` 注册到 mjlab registry，训练/推理脚本通过 `--task` 查询配置。当前包含 `Tracking-Flat-G1-v0`、`Tracking-Flat-G1-v0-NoStateEst`、`Tracking-Flat-G1-v1`、`Tracking-Flat-G1-v1-NoStateEst`、`Tracking-Flat-G1-v2`、`Tracking-Flat-G1-v2-NoStateEst`。
 
 ```
 train_mimic/tasks/tracking/
@@ -554,21 +555,25 @@ train_mimic/tasks/tracking/
 │   ├── __init__.py                  # 注册 Tracking-Flat-G1-v0 / Tracking-Flat-G1-v0-NoStateEst
 │   ├── flat_env_cfg.py              # G1 机器人特化配置（关节/body/scale）
 │   └── rl_cfg.py                    # PPO + 网络结构配置
-└── config/g1_v1/
+├── config/g1_v1/
     ├── __init__.py                  # 注册 Tracking-Flat-G1-v1 / Tracking-Flat-G1-v1-NoStateEst
     ├── flat_env_cfg.py              # uniform sampling, 放宽 termination, 短 episode
     └── rl_cfg.py                    # experiment_name=g1_tracking_v1
+└── config/g1_v2/
+    ├── __init__.py                  # 注册 Tracking-Flat-G1-v2 / Tracking-Flat-G1-v2-NoStateEst
+    ├── flat_env_cfg.py              # v0 settings + uniform sampling
+    └── rl_cfg.py                    # experiment_name=g1_tracking_v2
 ```
 
-**v0 vs v1 配置差异**：
+**v0 / v1 / v2 配置差异**：
 
-| 项 | v0 | v1 | 理由 |
-|---|---|---|---|
-| sampling_mode | adaptive | uniform | 避免 adaptive 死亡螺旋 |
-| anchor_pos threshold | 0.25 | 0.5 | 放宽躯干容忍 |
-| anchor_ori threshold | 0.8 | 1.2 | 放宽朝向容忍 |
-| ee_body_pos threshold | 0.25 | 0.5 | 放宽末端容忍 |
-| episode_length_s | 10.0 | 5.0 | 更容易拿到 time_out 成功 |
+| 项 | v0 | v1 | v2 | 理由 |
+|---|---|---|---|---|
+| sampling_mode | adaptive | uniform | uniform | `v1` 为通用动作优化；`v2` 只关闭 adaptive |
+| anchor_pos threshold | 0.25 | 0.5 | 0.25 | `v2` 保持 `v0` 终止条件 |
+| anchor_ori threshold | 0.8 | 1.2 | 0.8 | `v2` 保持 `v0` 终止条件 |
+| ee_body_pos threshold | 0.25 | 0.5 | 0.25 | `v2` 保持 `v0` 终止条件 |
+| episode_length_s | 10.0 | 5.0 | 10.0 | `v2` 保持 `v0` 训练节奏 |
 
 > **注意**：tracking task 的 mdp 模块已从 mjlab 复制到本地 `train_mimic/tasks/tracking/mdp/`，可自由修改调试。基础设施类（`ManagerBasedRlEnvCfg`、`SceneCfg` 等）仍然来自 mjlab。
 

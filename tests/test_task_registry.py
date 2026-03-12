@@ -13,6 +13,7 @@ def test_no_state_estimation_tasks_are_registered() -> None:
     expected_tasks = (
         "Tracking-Flat-G1-v0-NoStateEst",
         "Tracking-Flat-G1-v1-NoStateEst",
+        "Tracking-Flat-G1-v2-NoStateEst",
     )
 
     for task_name in expected_tasks:
@@ -39,3 +40,26 @@ def test_no_state_estimation_play_env_is_registered() -> None:
     assert "motion_anchor_pos_b" not in actor_terms
     assert "base_lin_vel" not in actor_terms
     assert play_cfg.observations["actor"].enable_corruption is False
+
+
+def test_v2_matches_v0_except_sampling_and_experiment_name() -> None:
+    import mjlab.tasks  # noqa: F401
+    import train_mimic.tasks  # noqa: F401
+    from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
+
+    v0_env = load_env_cfg("Tracking-Flat-G1-v0")
+    v2_env = load_env_cfg("Tracking-Flat-G1-v2")
+
+    assert v0_env.episode_length_s == v2_env.episode_length_s == 10.0
+    assert v0_env.terminations["anchor_pos"].params["threshold"] == v2_env.terminations[
+        "anchor_pos"
+    ].params["threshold"]
+    assert v0_env.terminations["anchor_ori"].params["threshold"] == v2_env.terminations[
+        "anchor_ori"
+    ].params["threshold"]
+    assert v0_env.terminations["ee_body_pos"].params["threshold"] == v2_env.terminations[
+        "ee_body_pos"
+    ].params["threshold"]
+    assert v0_env.commands["motion"].sampling_mode == "adaptive"
+    assert v2_env.commands["motion"].sampling_mode == "uniform"
+    assert load_rl_cfg("Tracking-Flat-G1-v2").experiment_name == "g1_tracking_v2"

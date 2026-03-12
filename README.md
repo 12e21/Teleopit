@@ -81,6 +81,8 @@ python train_mimic/scripts/train.py \
   --motion_file data/datasets/builds/twist2_full/train.npz
 ```
 
+如果数据集中存在很多极难或可疑 clip，可改用 `Tracking-Flat-G1-v2`；它与 `v0` 配置一致，只把 motion sampling 改为 `uniform`。
+
 ## Choose Your Path
 
 - **我想一键重建推荐训练数据集**：运行 `bash scripts/data/build_twist2_full.sh`

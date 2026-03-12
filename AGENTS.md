@@ -236,7 +236,7 @@ train_mimic/               # Training package (pip install -e '.[train]')
 │   ├── benchmark.py          # Policy evaluation with tracking errors
 │   └── convert_pkl_to_npz.py # PKL → NPZ clip conversion and merge (body pose labels rebuilt via MuJoCo FK)
 ├── tasks/                    # Task registration + env/runner cfg
-│   └── tracking/config/g1/   # Tracking-Flat-G1-v0 / Tracking-Flat-G1-v0-NoStateEst, env cfg, PPO cfg
+│   └── tracking/config/      # g1(v0), g1_v1, g1_v2 task env/runner configs
 ├── configs/
 │   └── twist2_dataset.yaml   # Legacy dataset manifest (not used by current train/play/benchmark main path)
 ├── assets/g1/                # G1 assets
@@ -261,6 +261,7 @@ Quick reference:
  Ingest data: `python scripts/ingest_motion.py --input data/hc_mocap_bvh --source hc_mocap_v1 --bvh_format hc_mocap --manifest data/motion/manifests/v1.csv --npz_root .`
  Build dataset: `python scripts/data/build_dataset.py --manifest data/motion/manifests/v1.csv --dataset_version v1 --npz_root .` (mixed fps use `--target_fps 30`)
  Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 --motion_file data/datasets/builds/twist2_full/train.npz --num_envs 4096 --max_iterations 30000`
+ Train (uniform-only v0 variant): `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v2 --motion_file data/datasets/builds/twist2_full/train.npz --num_envs 4096 --max_iterations 30000`
  Sim2Real Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0-NoStateEst --motion_file data/datasets/builds/twist2_full/train.npz --num_envs 4096 --max_iterations 30000`
  Multi-GPU Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 --motion_file data/datasets/builds/twist2_full/train.npz --gpu_ids 0 1 2 3 --num_envs 1024 --max_iterations 30000` (`--num_envs` is per-GPU)
  Export: `python train_mimic/scripts/save_onnx.py --checkpoint <path> --output policy.onnx`
@@ -270,7 +271,7 @@ Quick reference:
 
  **Environment API**: mjlab `ManagerBasedRlEnv` + standard rsl_rl runner
  **Config system**: Python class-based env/runner cfg from task registry
- **Training tasks**: `Tracking-Flat-G1-v0`, `Tracking-Flat-G1-v0-NoStateEst`, `Tracking-Flat-G1-v1`, `Tracking-Flat-G1-v1-NoStateEst`
+ **Training tasks**: `Tracking-Flat-G1-v0`, `Tracking-Flat-G1-v0-NoStateEst`, `Tracking-Flat-G1-v1`, `Tracking-Flat-G1-v1-NoStateEst`, `Tracking-Flat-G1-v2`, `Tracking-Flat-G1-v2-NoStateEst`
  **Multi-GPU training**: supported on a single node via `train_mimic/scripts/train.py --gpu_ids ...`; script relaunches itself with distributed workers, and `--num_envs` means per-GPU environments
  **Checkpoint format**: `logs/rsl_rl/{experiment}/{run}/model_{iter}.pt`
  **Network**: Standard MLP actor/critic (`[512,256,128]`, ELU)
