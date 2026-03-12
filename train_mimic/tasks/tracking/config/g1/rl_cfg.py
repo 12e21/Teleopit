@@ -48,4 +48,5 @@ def make_g1_tracking_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
         num_steps_per_env=24,
         max_iterations=30_000,
         logger="tensorboard",
+        upload_model=False,
     )

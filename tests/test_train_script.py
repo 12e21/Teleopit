@@ -7,6 +7,9 @@ import argparse
 import pytest
 
 from train_mimic.scripts import train
+from train_mimic.tasks.tracking.config.g1.rl_cfg import make_g1_tracking_ppo_runner_cfg
+from train_mimic.tasks.tracking.config.g1_v1.rl_cfg import make_g1_tracking_ppo_runner_cfg_v1
+from train_mimic.tasks.tracking.config.g1_v2.rl_cfg import make_g1_tracking_ppo_runner_cfg_v2
 
 
 class _CudaStub:
@@ -125,3 +128,9 @@ class TestTrainLauncherHelpers:
             "gpu_ids": [0, 1],
             "argv": ["train.py", "--gpu_ids", "0", "1", "--num_envs", "1024"],
         }
+
+
+def test_tracking_runner_configs_disable_model_upload() -> None:
+    assert make_g1_tracking_ppo_runner_cfg().upload_model is False
+    assert make_g1_tracking_ppo_runner_cfg_v1().upload_model is False
+    assert make_g1_tracking_ppo_runner_cfg_v2().upload_model is False
