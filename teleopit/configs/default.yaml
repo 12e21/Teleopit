@@ -6,6 +6,7 @@ defaults:
 
 policy_hz: 50.0
 pd_hz: 200.0
+transition_duration: 2.0  # seconds to interpolate from default pose to motion command (0.0 to disable)
 viewers: "sim2sim"
 realtime: false
 

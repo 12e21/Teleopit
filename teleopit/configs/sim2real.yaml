@@ -5,6 +5,7 @@ defaults:
   - _self_
 
 policy_hz: 50.0
+transition_duration: 2.0  # seconds to interpolate from default pose to motion command (0.0 to disable)
 
 # Physical robot SDK configuration
 real_robot:

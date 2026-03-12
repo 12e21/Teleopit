@@ -9,6 +9,7 @@ from numpy.typing import NDArray
 
 from teleopit.bus.topics import TOPIC_ACTION, TOPIC_MIMIC_OBS, TOPIC_ROBOT_STATE
 from teleopit.controllers.observation import MjlabObservationBuilder
+from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Recorder, Retargeter, Robot
 from teleopit.retargeting.core import extract_mimic_obs
 
@@ -283,6 +284,10 @@ class SimulationLoop:
         self._last_retarget_qpos: Float64Array | None = None
         self._realtime: bool = bool(self._try_get_cfg("realtime") or False)
 
+        # Motion command transition smoothing
+        transition_dur = float(self._try_get_cfg("transition_duration") or 0.0)
+        self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
+
         # Resolve viewer set (support legacy viewer=bool kwarg)
         if viewers is not None:
             self._viewers: set[str] = set(viewers)
@@ -404,9 +409,19 @@ class SimulationLoop:
 
                 retargeted = cached_retargeted
                 qpos = self._retarget_to_qpos(retargeted)
-                mimic_obs = extract_mimic_obs(qpos=qpos, last_qpos=self._last_retarget_qpos, dt=1.0 / self.policy_hz)
 
                 state = self.robot.get_state()
+
+                # Start interpolation on first frame from robot's current pose
+                if self._last_retarget_qpos is None and self._qpos_interpolator.duration > 0:
+                    start_qpos = np.zeros(36, dtype=np.float64)
+                    start_qpos[0:3] = np.asarray(state.base_pos[:3], dtype=np.float64)
+                    start_qpos[3:7] = np.asarray(state.quat[:4], dtype=np.float64)
+                    start_qpos[7:36] = np.asarray(state.qpos[:29], dtype=np.float64)
+                    self._qpos_interpolator.start(start_qpos)
+                qpos = self._qpos_interpolator.apply(qpos)
+
+                mimic_obs = extract_mimic_obs(qpos=qpos, last_qpos=self._last_retarget_qpos, dt=1.0 / self.policy_hz)
 
                 # Align motion root XY to robot's current XY position.
                 # The retargeter outputs BVH world coordinates, but the policy

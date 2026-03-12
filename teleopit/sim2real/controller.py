@@ -25,6 +25,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from teleopit.controllers.observation import MjlabObservationBuilder
+from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.inputs.udp_bvh_provider import UDPBVHInputProvider
 from teleopit.retargeting.core import RetargetingModule
@@ -69,6 +70,10 @@ class Sim2RealController:
 
         self.policy_hz: float = float(_cfg_get(cfg, "policy_hz", 50.0))
         self._project_root = Path(__file__).resolve().parent.parent.parent
+
+        # Motion command transition smoothing
+        transition_dur = float(_cfg_get(cfg, "transition_duration", 0.0) or 0.0)
+        self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
 
         # ---- Real robot (SDK) ----
         real_cfg = _cfg_get(cfg, "real_robot")
@@ -340,6 +345,7 @@ class Sim2RealController:
         # Retarget -> mimic observation
         retargeted = self.retargeter.retarget(human_frame)
         qpos = self._retarget_to_qpos(retargeted)
+        qpos = self._qpos_interpolator.apply(qpos)
 
         # Robot state from SDK
         robot_state = self.robot.get_state()
@@ -522,6 +528,7 @@ class Sim2RealController:
         init_qpos[7:36] = state.qpos.astype(np.float64)
         self._last_retarget_qpos = init_qpos
         self._last_action = np.zeros(self.num_actions, dtype=np.float32)
+        self._qpos_interpolator.start(init_qpos)
 
         # Reset observation builder history
         self.obs_builder.reset()
