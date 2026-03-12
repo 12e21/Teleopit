@@ -159,6 +159,15 @@ python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
     --motion_file data/datasets/builds/twist2_full/train.npz
 ```
 
+真机部署所需的 154D policy 使用独立任务：
+
+```bash
+# 154D no-state-estimation 任务（用于 sim2real）
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0-NoStateEst \
+    --num_envs 64 --max_iterations 100 \
+    --motion_file data/datasets/builds/twist2_full/train.npz
+```
+
 ### 完整训练
 
 ```bash
@@ -200,6 +209,12 @@ tensorboard --logdir logs/rsl_rl/g1_tracking
 | `--device` | `cuda:0` | 训练设备 |
 | `--gpu_ids` | 不设置 | 单机多卡启动辅助参数，例如 `--gpu_ids 0 1 2 3` |
 | `--master_port` | `29500` | 多卡时内部 torchrun 使用的端口 |
+
+任务选择说明：
+
+- `Tracking-Flat-G1-v0`：默认 sim2sim 训练任务，actor 输入为 160D。
+- `Tracking-Flat-G1-v0-NoStateEst`：真机部署使用的 154D 训练任务，actor 去掉 `motion_anchor_pos_b` 和 `base_lin_vel`。
+- `Tracking-Flat-G1-v1` / `Tracking-Flat-G1-v1-NoStateEst`：对应 general-motion 优化版本。
 
 ### 多卡训练说明
 
@@ -294,7 +309,7 @@ python scripts/run_sim.py controller.policy_path=policy.onnx
 ### 网络架构
 
 - Separate Actor/Critic MLP（`RslRlModelCfg`）
-- Actor 网络：[512, 256, 128]，ELU 激活，输入 160D → 输出 29D
+- Actor 网络：[512, 256, 128]，ELU 激活，默认任务输入 160D；`*-NoStateEst` 任务输入 154D；输出均为 29D
 - Critic 网络：[512, 256, 128]，ELU 激活，输入 286D → 输出 1D
 - Empirical normalization（rsl_rl 内置运行均值/方差归一化）
 - GaussianDistribution, init_std=1.0
@@ -522,7 +537,7 @@ benchmark 脚本会输出：
 
 ## 训练代码结构
 
-任务通过 `register_mjlab_task("Tracking-Flat-G1-v0", ...)` 注册到 mjlab registry，训练/推理脚本通过 `--task` 查询配置。
+任务通过 `register_mjlab_task(...)` 注册到 mjlab registry，训练/推理脚本通过 `--task` 查询配置。当前包含 `Tracking-Flat-G1-v0`、`Tracking-Flat-G1-v0-NoStateEst`、`Tracking-Flat-G1-v1`、`Tracking-Flat-G1-v1-NoStateEst`。
 
 ```
 train_mimic/tasks/tracking/
@@ -536,11 +551,11 @@ train_mimic/tasks/tracking/
 ├── rl/
 │   └── runner.py                    # MotionTrackingOnPolicyRunner（自动ONNX导出）
 ├── config/g1/
-│   ├── __init__.py                  # 注册 Tracking-Flat-G1-v0
+│   ├── __init__.py                  # 注册 Tracking-Flat-G1-v0 / Tracking-Flat-G1-v0-NoStateEst
 │   ├── flat_env_cfg.py              # G1 机器人特化配置（关节/body/scale）
 │   └── rl_cfg.py                    # PPO + 网络结构配置
 └── config/g1_v1/
-    ├── __init__.py                  # 注册 Tracking-Flat-G1-v1（general motion 优化）
+    ├── __init__.py                  # 注册 Tracking-Flat-G1-v1 / Tracking-Flat-G1-v1-NoStateEst
     ├── flat_env_cfg.py              # uniform sampling, 放宽 termination, 短 episode
     └── rl_cfg.py                    # experiment_name=g1_tracking_v1
 ```
