@@ -230,11 +230,11 @@ def test_pipeline_dim_match_passes(monkeypatch, tmp_path: Path) -> None:
 
 @requires_mujoco
 @_skip_no_xml
-def test_pipeline_160d_default_when_key_omitted(monkeypatch, tmp_path: Path) -> None:
-    """When has_state_estimation is omitted from robot cfg, pipeline defaults to True (160D)."""
+def test_pipeline_154d_default_when_key_omitted(monkeypatch, tmp_path: Path) -> None:
+    """When has_state_estimation is omitted from robot cfg, pipeline defaults to False (154D)."""
 
-    class DummyController160:
-        _expected_obs_dim = 160
+    class DummyController154:
+        _expected_obs_dim = 154
         def __init__(self, cfg: object) -> None:
             pass
 
@@ -256,7 +256,7 @@ def test_pipeline_160d_default_when_key_omitted(monkeypatch, tmp_path: Path) -> 
             pass
 
     monkeypatch.setattr("teleopit.pipeline.MuJoCoRobot", DummyRobot)
-    monkeypatch.setattr("teleopit.pipeline.RLPolicyController", DummyController160)
+    monkeypatch.setattr("teleopit.pipeline.RLPolicyController", DummyController154)
     monkeypatch.setattr("teleopit.pipeline.BVHInputProvider", DummyInputProvider)
     monkeypatch.setattr("teleopit.pipeline.RetargetingModule", DummyRetargeter)
     monkeypatch.setattr("teleopit.pipeline.SimulationLoop", DummyLoop)
@@ -264,4 +264,4 @@ def test_pipeline_160d_default_when_key_omitted(monkeypatch, tmp_path: Path) -> 
     cfg = OmegaConf.create(_pipeline_cfg(tmp_path, has_state_estimation=None))
 
     pipeline = TeleopPipeline(cfg)
-    assert pipeline.obs_builder.total_obs_size == 160
+    assert pipeline.obs_builder.total_obs_size == 154

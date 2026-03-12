@@ -213,8 +213,8 @@ class TeleopPipeline:
                 "TWIST2 policy path is deprecated; use mjlab-aligned policy and set robot.obs_builder=mjlab."
             )
         xml_path = str(_cfg_get(robot_cfg, "xml_path", ""))
-        # Sim2sim defaults to state estimation available
-        has_state_estimation = bool(_cfg_get(robot_cfg, "has_state_estimation", True))
+        # Inference defaults to the 154D no-state-estimation path unless explicitly overridden.
+        has_state_estimation = bool(_cfg_get(robot_cfg, "has_state_estimation", False))
         obs_cfg = {
             "num_actions": int(_cfg_get(robot_cfg, "num_actions")),
             "default_dof_pos": list(_cfg_get(robot_cfg, "default_angles")),

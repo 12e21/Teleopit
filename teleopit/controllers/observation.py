@@ -227,12 +227,12 @@ class MjlabObservationBuilder:
 
     Produces 160D or 154D policy observations depending on ``has_state_estimation``.
 
-    160D (has_state_estimation=True, sim2sim default):
+    160D (has_state_estimation=True):
         command(58) + motion_anchor_pos_b(3) + motion_anchor_ori_b(6) +
         base_lin_vel(3) + base_ang_vel(3) + joint_pos_rel(29) +
         joint_vel(29) + last_action(29).
 
-    154D (has_state_estimation=False, real-robot default):
+    154D (has_state_estimation=False, current inference default):
         command(58) + motion_anchor_ori_b(6) +
         base_ang_vel(3) + joint_pos_rel(29) +
         joint_vel(29) + last_action(29).

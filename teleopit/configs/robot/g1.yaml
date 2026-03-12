@@ -1,8 +1,7 @@
 num_actions: 29
 obs_builder: "mjlab"  # only mjlab is supported for policy inference
-# has_state_estimation: omitted — defaults differ by deployment:
-#   sim2sim (pipeline.py): true  (MuJoCo provides base_pos/base_lin_vel)
-#   sim2real (controller.py): false  (real robot has no state estimation)
+# has_state_estimation: omitted — defaults to false in both inference paths.
+# Set robot.has_state_estimation=true explicitly when running a 160D ONNX.
 
 kps: [40.18, 99.10, 40.18, 99.10, 28.50, 28.50,
       40.18, 99.10, 40.18, 99.10, 28.50, 28.50,

@@ -109,7 +109,7 @@ python train_mimic/scripts/train.py \
 
 ## Current Constraints
 
-- **只支持 mjlab policy（160D 或 154D）**：运行时会拒绝旧 TWIST2 1402D ONNX。sim2sim 默认 160D，真机默认 154D（无 state estimation）；ONNX 维度与 `has_state_estimation` 配置不匹配时启动即报错。
+- **只支持 mjlab policy（160D 或 154D）**：运行时会拒绝旧 TWIST2 1402D ONNX。当前推理路径默认走 154D（`has_state_estimation=false`）；若使用 160D ONNX，需显式传入 `robot.has_state_estimation=true`。ONNX 维度与该配置不匹配时启动即报错。
 - **必须提供有效 ONNX 路径**：`controller.policy_path` 不能为空，且应来自 `train_mimic` 导出。
 - **建议显式指定 `input.bvh_file`**：当前 `teleopit/configs/input/bvh.yaml` 中的默认路径是机器相关示例，不应依赖。
 - **sim2sim 应使用正确 XML**：G1 仿真应使用 `g1_sim2sim_29dof.xml`，避免旧 mocap XML 的 actuator limit 问题。
