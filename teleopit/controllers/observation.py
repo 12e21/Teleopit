@@ -174,7 +174,7 @@ class TWIST2ObservationBuilder:
 
 
 # =========================================================================
-# MjlabObservationBuilder -- matches mjlab tracking environment (160D policy obs)
+# MjlabObservationBuilder -- matches mjlab tracking environment (160D sim / 154D real)
 # =========================================================================
 
 
@@ -225,10 +225,17 @@ def _quat_to_rot6d_np(q: FloatVec) -> FloatVec:
 class MjlabObservationBuilder:
     """Observation builder matching the mjlab tracking environment.
 
-    Produces 160D policy observations consistent with mjlab TrackingEnv:
-    command(58) + motion_anchor_pos_b(3) + motion_anchor_ori_b(6) +
-    base_lin_vel(3) + base_ang_vel(3) + joint_pos_rel(29) +
-    joint_vel(29) + last_action(29).
+    Produces 160D or 154D policy observations depending on ``has_state_estimation``.
+
+    160D (has_state_estimation=True, sim2sim default):
+        command(58) + motion_anchor_pos_b(3) + motion_anchor_ori_b(6) +
+        base_lin_vel(3) + base_ang_vel(3) + joint_pos_rel(29) +
+        joint_vel(29) + last_action(29).
+
+    154D (has_state_estimation=False, real-robot default):
+        command(58) + motion_anchor_ori_b(6) +
+        base_ang_vel(3) + joint_pos_rel(29) +
+        joint_vel(29) + last_action(29).
     """
 
     def __init__(self, cfg: ConfigType) -> None:
@@ -236,6 +243,13 @@ class MjlabObservationBuilder:
         self.default_dof_pos: FloatVec = _as_float_vec(
             _cfg_get(cfg, "default_dof_pos"), "default_dof_pos"
         )
+
+        # Whether the robot provides base_pos and base_lin_vel (sim only).
+        try:
+            raw = _cfg_get(cfg, "has_state_estimation")
+        except KeyError:
+            raw = True
+        self.has_state_estimation: bool = bool(raw)
 
         # MuJoCo model for FK computation
         xml_path = str(_cfg_get(cfg, "xml_path"))
@@ -258,8 +272,10 @@ class MjlabObservationBuilder:
             raise ValueError(f"Anchor body '{anchor_name}' not found in model")
         self._anchor_body_id = self._body_name_to_idx[anchor_name]
 
-        # command(2*29) + 3 + 6 + 3 + 3 + joint_pos_rel(29) + joint_vel(29) + last_action(29)
-        self.total_obs_size: int = self.num_actions * 2 + 3 + 6 + 3 + 3 + self.num_actions * 3
+        # 160D: command(2*29) + 3 + 6 + 3 + 3 + joint_pos_rel(29) + joint_vel(29) + last_action(29)
+        # 154D: command(2*29)     + 6     + 3 + joint_pos_rel(29) + joint_vel(29) + last_action(29)
+        state_est_dims = (3 + 3) if self.has_state_estimation else 0  # motion_anchor_pos_b + base_lin_vel
+        self.total_obs_size: int = self.num_actions * 2 + state_est_dims + 6 + 3 + self.num_actions * 3
 
     def reset(self) -> None:
         """Reset internal state."""
@@ -293,7 +309,9 @@ class MjlabObservationBuilder:
         motion_joint_vel: FloatVec,
         last_action: FloatVec,
     ) -> FloatVec:
-        """Build 160D policy observation aligned with mjlab training config.
+        """Build policy observation aligned with mjlab training config.
+
+        Returns 160D when has_state_estimation=True, 154D when False.
 
         Args:
             robot_state: Current robot state.
@@ -309,18 +327,23 @@ class MjlabObservationBuilder:
             raise ValueError(f"robot_state.quat must be 4D (wxyz), got {robot_quat.shape[0]}")
         if ang_vel.shape[0] != 3:
             raise ValueError(f"robot_state.ang_vel must be 3D, got {ang_vel.shape[0]}")
-        if robot_state.base_pos is None or robot_state.base_lin_vel is None:
-            raise ValueError(
-                "MjlabObservationBuilder requires robot_state.base_pos and robot_state.base_lin_vel. "
-                "Current RobotState does not provide them."
-            )
-        robot_base_pos = np.asarray(robot_state.base_pos, dtype=np.float32).reshape(-1)
-        base_lin_vel = np.asarray(robot_state.base_lin_vel, dtype=np.float32).reshape(-1)
-        if robot_base_pos.shape[0] != 3 or base_lin_vel.shape[0] != 3:
-            raise ValueError(
-                f"robot_state.base_pos/base_lin_vel must be 3D, got "
-                f"{robot_base_pos.shape[0]}/{base_lin_vel.shape[0]}"
-            )
+
+        if self.has_state_estimation:
+            if robot_state.base_pos is None or robot_state.base_lin_vel is None:
+                raise ValueError(
+                    "MjlabObservationBuilder with has_state_estimation=True requires "
+                    "robot_state.base_pos and robot_state.base_lin_vel."
+                )
+            robot_base_pos = np.asarray(robot_state.base_pos, dtype=np.float32).reshape(-1)
+            base_lin_vel = np.asarray(robot_state.base_lin_vel, dtype=np.float32).reshape(-1)
+            if robot_base_pos.shape[0] != 3 or base_lin_vel.shape[0] != 3:
+                raise ValueError(
+                    f"robot_state.base_pos/base_lin_vel must be 3D, got "
+                    f"{robot_base_pos.shape[0]}/{base_lin_vel.shape[0]}"
+                )
+        else:
+            # No state estimation: use zeros for FK base_pos (orientation doesn't depend on it)
+            robot_base_pos = np.zeros(3, dtype=np.float32)
 
         motion = np.asarray(motion_qpos, dtype=np.float32).reshape(-1)
         if motion.shape[0] < 7 + self.num_actions:
@@ -363,16 +386,26 @@ class MjlabObservationBuilder:
         joint_vel_obs = qvel
         base_ang_vel = ang_vel
 
-        obs = np.concatenate([
-            command,              # 58
-            motion_anchor_pos_b,  # 3
-            motion_anchor_ori_b,  # 6
-            base_lin_vel,         # 3
-            base_ang_vel,         # 3
-            joint_pos_rel,        # 29
-            joint_vel_obs,        # 29
-            last_act,             # 29
-        ], dtype=np.float32)
+        if self.has_state_estimation:
+            obs = np.concatenate([
+                command,              # 58
+                motion_anchor_pos_b,  # 3
+                motion_anchor_ori_b,  # 6
+                base_lin_vel,         # 3
+                base_ang_vel,         # 3
+                joint_pos_rel,        # 29
+                joint_vel_obs,        # 29
+                last_act,             # 29
+            ], dtype=np.float32)
+        else:
+            obs = np.concatenate([
+                command,              # 58
+                motion_anchor_ori_b,  # 6
+                base_ang_vel,         # 3
+                joint_pos_rel,        # 29
+                joint_vel_obs,        # 29
+                last_act,             # 29
+            ], dtype=np.float32)
         if obs.shape[0] != self.total_obs_size:
             raise ValueError(f"Expected {self.total_obs_size}D mjlab observation, got {obs.shape[0]}")
         return obs

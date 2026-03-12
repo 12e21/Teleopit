@@ -213,13 +213,27 @@ class TeleopPipeline:
                 "TWIST2 policy path is deprecated; use mjlab-aligned policy and set robot.obs_builder=mjlab."
             )
         xml_path = str(_cfg_get(robot_cfg, "xml_path", ""))
+        # Sim2sim defaults to state estimation available
+        has_state_estimation = bool(_cfg_get(robot_cfg, "has_state_estimation", True))
         obs_cfg = {
             "num_actions": int(_cfg_get(robot_cfg, "num_actions")),
             "default_dof_pos": list(_cfg_get(robot_cfg, "default_angles")),
             "xml_path": xml_path,
             "anchor_body_name": _cfg_get(robot_cfg, "anchor_body_name", "torso_link"),
+            "has_state_estimation": has_state_estimation,
         }
-        return MjlabObservationBuilder(obs_cfg)
+        builder = MjlabObservationBuilder(obs_cfg)
+
+        # Startup dim validation: obs_builder must match policy input dim
+        policy_dim = getattr(self.controller, "_expected_obs_dim", None)
+        builder_dim = getattr(builder, "total_obs_size", None)
+        if policy_dim is not None and builder_dim is not None and policy_dim != builder_dim:
+            raise ValueError(
+                f"Observation dimension mismatch at startup: obs_builder produces {builder_dim}D "
+                f"but policy expects {policy_dim}D. Check has_state_estimation={has_state_estimation} "
+                "and ensure the ONNX model matches."
+            )
+        return builder
 
     def _prepare_cfg_paths(self) -> None:
         robot_cfg = cast(Any, _cfg_get(self.cfg, "robot"))

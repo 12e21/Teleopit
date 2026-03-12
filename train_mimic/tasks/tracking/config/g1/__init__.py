@@ -14,3 +14,12 @@ register_mjlab_task(
     rl_cfg=make_g1_tracking_ppo_runner_cfg(),
     runner_cls=MotionTrackingOnPolicyRunner,
 )
+
+# 154D variant: no base_pos / base_lin_vel (for real-robot deployment)
+register_mjlab_task(
+    task_id="Tracking-Flat-G1-v0-NoStateEst",
+    env_cfg=make_g1_flat_tracking_env_cfg(has_state_estimation=False),
+    play_env_cfg=make_g1_flat_tracking_env_cfg(has_state_estimation=False, play=True),
+    rl_cfg=make_g1_tracking_ppo_runner_cfg(),
+    runner_cls=MotionTrackingOnPolicyRunner,
+)

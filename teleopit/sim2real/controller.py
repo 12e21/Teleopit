@@ -162,13 +162,26 @@ class Sim2RealController:
         xml_path = str(_cfg_get(robot_cfg, "xml_path", ""))
         if xml_path and not Path(xml_path).is_absolute():
             xml_path = str((self._project_root / xml_path).resolve())
+        # Real robot defaults to no state estimation (base_pos / base_lin_vel unavailable)
+        has_state_estimation = bool(_cfg_get(robot_cfg, "has_state_estimation", False))
         obs_cfg = {
             "num_actions": int(_cfg_get(robot_cfg, "num_actions", 29)),
             "default_dof_pos": list(_cfg_get(robot_cfg, "default_angles")),
             "xml_path": xml_path,
             "anchor_body_name": _cfg_get(robot_cfg, "anchor_body_name", "torso_link"),
+            "has_state_estimation": has_state_estimation,
         }
         self.obs_builder = MjlabObservationBuilder(obs_cfg)
+
+        # Startup dim validation: obs_builder must match policy input dim
+        policy_dim = getattr(self.policy, "_expected_obs_dim", None)
+        builder_dim = self.obs_builder.total_obs_size
+        if policy_dim is not None and policy_dim != builder_dim:
+            raise ValueError(
+                f"Observation dimension mismatch at startup: obs_builder produces {builder_dim}D "
+                f"but policy expects {policy_dim}D. Check has_state_estimation={has_state_estimation} "
+                "and ensure the ONNX model matches."
+            )
 
         # Default standing pose (29-DOF)
         self.default_angles = np.asarray(

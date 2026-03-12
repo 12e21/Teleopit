@@ -56,10 +56,12 @@ class RLPolicyController:
         self._output_name = self._session.get_outputs()[0].name
 
         self._expected_obs_dim = self._extract_feature_dim(self._session.get_inputs()[0].shape)
-        if self._expected_obs_dim is not None and self._expected_obs_dim != 160:
+        _SUPPORTED_OBS_DIMS = {154, 160}
+        if self._expected_obs_dim is not None and self._expected_obs_dim not in _SUPPORTED_OBS_DIMS:
             raise ValueError(
                 f"Unsupported policy input dimension: {self._expected_obs_dim}. "
-                "Only mjlab-aligned 160D policies exported from train_mimic are supported."
+                f"Supported dimensions: {sorted(_SUPPORTED_OBS_DIMS)} "
+                "(mjlab-aligned policies exported from train_mimic)."
             )
 
         raw_scale = self._cfg_get(cfg, "action_scale", None)

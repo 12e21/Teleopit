@@ -101,7 +101,7 @@ python scripts/run_sim2real.py controller.policy_path=policy.onnx
 ## 常见误区
 
 - **没有 policy 就直接运行**：`controller.policy_path` 是必填项。
-- **把旧的 1402D / TWIST2 ONNX 拿来跑**：当前主路径只支持 `mjlab 160D` policy。
+- **把旧的 1402D / TWIST2 ONNX 拿来跑**：当前主路径只支持 mjlab policy（sim2sim 160D / 真机 154D）。
 - **依赖默认 BVH 路径**：请显式设置 `input.bvh_file`，不要假设示例路径在本机存在。
 - **把训练、推理、sim2real 混成一个安装步骤**：按需要安装 extras，排错会更简单。
 

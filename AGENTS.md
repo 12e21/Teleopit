@@ -11,7 +11,7 @@ Config: Hydra/OmegaConf YAML files in `teleopit/configs/`
 ## Architecture
 
 ```
-InputProvider (BVH file / UDP realtime / VR) → Retargeter (GMR) → ObservationBuilder (mjlab 160D) → Controller (ONNX RL) → Robot (MuJoCo + PD)
+InputProvider (BVH file / UDP realtime / VR) → Retargeter (GMR) → ObservationBuilder (mjlab 160D sim / 154D real) → Controller (ONNX RL) → Robot (MuJoCo + PD / Unitree SDK)
 ```
 
 Module-internal isolation: all modules run in-process, communicate via `InProcessBus` (zero-copy). Core interfaces defined as `typing.Protocol` in `teleopit/interfaces.py`.
@@ -32,7 +32,7 @@ teleopit/                 # Core package
 │   └── input/udp_bvh.yaml # UDP realtime BVH input (reference_bvh, port, timeout)
 ├── controllers/
 │   ├── rl_policy.py      # RLPolicyController — ONNX inference, returns RAW action (no scaling)
-│   └── observation.py    # MjlabObservationBuilder — 160D policy obs aligned with train_mimic
+│   └── observation.py    # MjlabObservationBuilder — 160D (sim) / 154D (real) policy obs aligned with train_mimic
 ├── inputs/
 │   ├── bvh_provider.py       # BVHInputProvider — offline BVH file; exposes fps, bone_names, bone_parents
 │   └── udp_bvh_provider.py   # UDPBVHInputProvider — realtime UDP BVH; daemon receiver thread
@@ -135,8 +135,11 @@ python scripts/send_bvh_udp.py --bvh data/hc_mocap/wander.bvh --loop
 - `bvh_provider.py` 的 `fps` 属性返回降采样后的实际帧率（hc_mocap 60→30fps）
 
 ### Inference Observation
-- Inference policy observation is **mjlab-aligned 160D**:
-  `command(58) + motion_anchor_pos_b(3) + motion_anchor_ori_b(6) + base_lin_vel(3) + base_ang_vel(3) + joint_pos_rel(29) + joint_vel(29) + last_action(29)`.
+- Inference policy observation is **mjlab-aligned**, with two modes controlled by `has_state_estimation`:
+  - **160D** (sim2sim default, `has_state_estimation=true`): `command(58) + motion_anchor_pos_b(3) + motion_anchor_ori_b(6) + base_lin_vel(3) + base_ang_vel(3) + joint_pos_rel(29) + joint_vel(29) + last_action(29)`.
+  - **154D** (sim2real default, `has_state_estimation=false`): `command(58) + motion_anchor_ori_b(6) + base_ang_vel(3) + joint_pos_rel(29) + joint_vel(29) + last_action(29)`. Omits `motion_anchor_pos_b` and `base_lin_vel` (unavailable on real robot).
+- `has_state_estimation` is **not** set in `robot/g1.yaml` (shared config). Each deployment path has its own default: `pipeline.py` defaults `true`, `sim2real/controller.py` defaults `false`. Users can override via Hydra: `robot.has_state_estimation=false`.
+- At startup, obs_builder dimension is validated against the ONNX policy input dimension; mismatches raise `ValueError` immediately.
 - Legacy TWIST2 1402D policy path is deprecated and rejected at runtime.
 
 ### GMR Retargeting

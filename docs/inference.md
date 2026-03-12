@@ -2,7 +2,7 @@
 
 这篇文档覆盖 Teleopit 当前的推理主路径：**离线 sim2sim、UDP 实时 online sim2sim、viewer、录制和渲染**。
 
-当前运行时主路径是：`mjlab 160D observation + train_mimic 导出的 ONNX policy`。
+当前运行时主路径是：`mjlab observation + train_mimic 导出的 ONNX policy`。sim2sim 使用 160D 观测，真机使用 154D 观测（无 state estimation）。
 
 ## 运行前确认
 
@@ -132,8 +132,8 @@ bash scripts/render_all_lafan1.sh --policy policy.onnx --max_seconds 30
 
 ## 当前行为约束
 
-- **只接受 mjlab 160D ONNX**：旧的 1402D / TWIST2 policy 会在运行时直接报错。
-- **观测不自动 pad/trim**：观测定义与 ONNX 输入维度不一致时会 fail fast。
+- **只接受 mjlab ONNX（160D 或 154D）**：旧的 1402D / TWIST2 policy 会在运行时直接报错。sim2sim 默认 160D（`has_state_estimation=true`），真机默认 154D（`has_state_estimation=false`）。可通过 `robot.has_state_estimation=false` 切换。
+- **观测不自动 pad/trim**：观测定义与 ONNX 输入维度不一致时会 fail fast（启动时即校验）。
 - **建议显式指定输入文件**：不要依赖 `teleopit/configs/input/bvh.yaml` 中的机器相关示例路径。
 
 ## 继续阅读
