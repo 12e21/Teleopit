@@ -8,14 +8,14 @@
 
 Sim2Real 模块复用了 Teleopit 现有的动捕输入、运动重定向、观测构建和 RL 策略推理管线，将底层从 MuJoCo 仿真替换为 Unitree SDK2 DDS 通信，直接控制实物 G1 机器人。
 
-> **观测维度**：真机默认使用 **154D** 观测（`has_state_estimation=false`），因为实物 G1 无法提供 `base_pos` 和 `base_lin_vel`。对应的 ONNX policy 应使用本项目注册的 154D 训练任务导出：
+> **观测维度**：真机只支持 **154D** 观测（`has_state_estimation=false`），因为实物 G1 无法提供 `base_pos` 和 `base_lin_vel`。对应的 ONNX policy 应使用本项目注册的 154D 训练任务导出：
 >
 > ```bash
 > python train_mimic/scripts/train.py \
 >   --task Tracking-Flat-G1-v0-NoStateEst ...
 > ```
 >
-> 如果 ONNX 维度（154 或 160）与 `has_state_estimation` 配置不匹配，启动时会立即报错。
+> 若传入 160D ONNX，或显式设置 `robot.has_state_estimation=true`，启动时会立即报错。sim2real 只接受 154D `*-NoStateEst` policy。
 
 ### 两种操作模式
 
@@ -201,7 +201,7 @@ kd: [2,2,2,4,2,2, 2,2,2,4,2,2, 4,4,4,
 
 | 方面 | Sim2Sim (MuJoCo) | Sim2Real (SDK) |
 |------|-------------------|----------------|
-| 观测维度 | 160D（`has_state_estimation=true`） | 154D（`has_state_estimation=false`） |
+| 观测维度 | 160D（仅 MuJoCo/sim2sim） | 154D（sim2real 唯一支持） |
 | 机器人状态 | `mujoco.MjData`（含 base_pos, base_lin_vel） | SDK `LowState_`（仅 qpos, qvel, quat, ang_vel） |
 | 动作执行 | PD 内循环 × decimation | 直接位置指令（SDK 电机 PD） |
 | PD 增益 | 仿真值（手腕 kp=4） | 实物值（手腕 kp=20） |

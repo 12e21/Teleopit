@@ -138,7 +138,7 @@ python scripts/send_bvh_udp.py --bvh data/hc_mocap/wander.bvh --loop
 - Inference policy observation is **mjlab-aligned**, with two modes controlled by `has_state_estimation`:
   - **160D** (`has_state_estimation=true`): `command(58) + motion_anchor_pos_b(3) + motion_anchor_ori_b(6) + base_lin_vel(3) + base_ang_vel(3) + joint_pos_rel(29) + joint_vel(29) + last_action(29)`.
   - **154D** (current default, `has_state_estimation=false`): `command(58) + motion_anchor_ori_b(6) + base_ang_vel(3) + joint_pos_rel(29) + joint_vel(29) + last_action(29)`. Omits `motion_anchor_pos_b` and `base_lin_vel` (unavailable without state estimation).
-- `has_state_estimation` is **not** set in `robot/g1.yaml` (shared config). Current inference defaults are `false` in both `pipeline.py` and `sim2real/controller.py`. Users can override via Hydra: `robot.has_state_estimation=true`.
+- `has_state_estimation` is **not** set in `robot/g1.yaml` (shared config). Current inference defaults are `false` in both `pipeline.py` and `sim2real/controller.py`. Users may override it to `true` for MuJoCo/sim2sim 160D inference, but sim2real must stay `false` and only supports 154D ONNX.
 - At startup, obs_builder dimension is validated against the ONNX policy input dimension; mismatches raise `ValueError` immediately.
 - Legacy TWIST2 1402D policy path is deprecated and rejected at runtime.
 

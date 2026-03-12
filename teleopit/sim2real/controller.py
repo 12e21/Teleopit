@@ -151,6 +151,7 @@ class Sim2RealController:
                     controller_cfg["policy_path"] = str(resolved)
 
         self.policy = RLPolicyController(controller_cfg)
+        policy_dim = getattr(self.policy, "_expected_obs_dim", None)
 
         # ObservationBuilder -- mjlab-aligned path only.
         obs_type = str(_cfg_get(robot_cfg, "obs_builder", "mjlab")).lower()
@@ -161,9 +162,26 @@ class Sim2RealController:
             )
         xml_path = str(_cfg_get(robot_cfg, "xml_path", ""))
         if xml_path and not Path(xml_path).is_absolute():
-            xml_path = str((self._project_root / xml_path).resolve())
-        # Real robot defaults to no state estimation (base_pos / base_lin_vel unavailable)
+            candidate = (self._project_root / xml_path).resolve()
+            if candidate.exists():
+                xml_path = str(candidate)
+            else:
+                # Fallback: GMR assets live inside the teleopit package
+                fallback = self._project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml"
+                xml_path = str(fallback.resolve())
+        # Real robot does not provide base_pos / base_lin_vel, so sim2real is 154D-only.
         has_state_estimation = bool(_cfg_get(robot_cfg, "has_state_estimation", False))
+        if has_state_estimation:
+            raise ValueError(
+                "Sim2real requires robot.has_state_estimation=false. "
+                "The real robot does not provide base_pos/base_lin_vel, so only 154D "
+                "mjlab ONNX policies exported from *-NoStateEst tasks are supported."
+            )
+        if policy_dim is not None and policy_dim != 154:
+            raise ValueError(
+                f"Sim2real only supports 154D mjlab ONNX policies exported from "
+                f"*-NoStateEst tasks; got {policy_dim}D."
+            )
         obs_cfg = {
             "num_actions": int(_cfg_get(robot_cfg, "num_actions", 29)),
             "default_dof_pos": list(_cfg_get(robot_cfg, "default_angles")),
@@ -174,7 +192,6 @@ class Sim2RealController:
         self.obs_builder = MjlabObservationBuilder(obs_cfg)
 
         # Startup dim validation: obs_builder must match policy input dim
-        policy_dim = getattr(self.policy, "_expected_obs_dim", None)
         builder_dim = self.obs_builder.total_obs_size
         if policy_dim is not None and policy_dim != builder_dim:
             raise ValueError(

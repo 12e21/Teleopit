@@ -157,26 +157,26 @@ class TestSim2RealStartupDim:
         ctrl = Sim2RealController(cfg)
         assert ctrl.obs_builder.total_obs_size == 154
 
-    def test_explicit_true_produces_160d(self, monkeypatch, tmp_path: Path) -> None:
-        """Explicit has_state_estimation=True → 160D (for sim2sim-like use)."""
+    def test_explicit_true_is_rejected(self, monkeypatch, tmp_path: Path) -> None:
+        """Sim2real must reject has_state_estimation=True."""
+        from teleopit.sim2real.controller import Sim2RealController
+
+        policy_mock = _make_dummy_policy(154)
+        _apply_sim2real_mocks(monkeypatch, policy_mock)
+        cfg = _make_sim2real_cfg(tmp_path, has_state_estimation=True)
+
+        with pytest.raises(ValueError, match="has_state_estimation=false"):
+            Sim2RealController(cfg)
+
+    def test_160d_policy_is_rejected(self, monkeypatch, tmp_path: Path) -> None:
+        """Sim2real must reject 160D ONNX policies even if has_state_estimation=False."""
         from teleopit.sim2real.controller import Sim2RealController
 
         policy_mock = _make_dummy_policy(160)
         _apply_sim2real_mocks(monkeypatch, policy_mock)
-        cfg = _make_sim2real_cfg(tmp_path, has_state_estimation=True)
+        cfg = _make_sim2real_cfg(tmp_path, has_state_estimation=False)
 
-        ctrl = Sim2RealController(cfg)
-        assert ctrl.obs_builder.total_obs_size == 160
-
-    def test_dim_mismatch_raises(self, monkeypatch, tmp_path: Path) -> None:
-        """154D obs_builder + 160D policy → ValueError at startup."""
-        from teleopit.sim2real.controller import Sim2RealController
-
-        policy_mock = _make_dummy_policy(160)  # policy expects 160D
-        _apply_sim2real_mocks(monkeypatch, policy_mock)
-        cfg = _make_sim2real_cfg(tmp_path, has_state_estimation=False)  # builder produces 154D
-
-        with pytest.raises(ValueError, match="mismatch"):
+        with pytest.raises(ValueError, match="only supports 154D"):
             Sim2RealController(cfg)
 
     def test_dim_match_passes(self, monkeypatch, tmp_path: Path) -> None:
