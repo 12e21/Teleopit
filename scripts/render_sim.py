@@ -86,17 +86,6 @@ def _load_configs(
         project_root / "teleopit" / "configs" / "input" / "bvh.yaml"
     )
 
-    xml_path = (
-        project_root
-        / "teleopit"
-        / "retargeting"
-        / "gmr"
-        / "assets"
-        / "unitree_g1"
-        / "g1_mocap_29dof.xml"
-    )
-    robot_cfg.xml_path = str(xml_path)
-
     if policy_path is not None:
         resolved_policy = Path(policy_path).expanduser()
         if not resolved_policy.is_absolute():
@@ -235,6 +224,18 @@ def render_retarget(
     project_root = _find_project_root()
     cfgs = _load_configs(str(bvh_path), project_root, bvh_format, policy_path=None)
 
+    # Retarget rendering uses the GMR mocap XML (no actuator limits needed)
+    mocap_xml = (
+        project_root
+        / "teleopit"
+        / "retargeting"
+        / "gmr"
+        / "assets"
+        / "unitree_g1"
+        / "g1_mocap_29dof.xml"
+    )
+    cfgs["robot"].xml_path = str(mocap_xml)
+
     from teleopit.inputs import BVHInputProvider
     from teleopit.retargeting.core import RetargetingModule
     from teleopit.robots.mujoco_robot import MuJoCoRobot
@@ -329,17 +330,6 @@ def render_sim2sim(
 
     from teleopit.pipeline import TeleopPipeline
     from teleopit.retargeting.core import extract_mimic_obs
-
-    sim2sim_xml = (
-        project_root
-        / "teleopit"
-        / "retargeting"
-        / "gmr"
-        / "assets"
-        / "unitree_g1"
-        / "g1_sim2sim_29dof.xml"
-    )
-    cfgs["robot"].xml_path = str(sim2sim_xml)
 
     cfg = OmegaConf.create(
         {

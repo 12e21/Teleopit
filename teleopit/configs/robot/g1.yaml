@@ -1,26 +1,30 @@
+# G1 baseline from unitree_rl_mjlab g1_constants.py (HOME_KEYFRAME).
+# Action scale computed as 0.25 * effort_limit / stiffness per actuator.
+# Do NOT copy from deploy.yaml (contains known waist_yaw scale error).
+
 num_actions: 29
 obs_builder: "mjlab"  # only mjlab is supported for policy inference
 # has_state_estimation: omitted — defaults to false in both inference paths.
 # Set robot.has_state_estimation=true explicitly only for MuJoCo/sim2sim 160D ONNX.
 # Sim2real does not support has_state_estimation=true.
 
-kps: [40.18, 99.10, 40.18, 99.10, 28.50, 28.50,
-      40.18, 99.10, 40.18, 99.10, 28.50, 28.50,
-      40.18, 28.50, 28.50,
-      14.25, 14.25, 14.25, 14.25, 14.25, 16.78, 16.78,
-      14.25, 14.25, 14.25, 14.25, 14.25, 16.78, 16.78]
+kps: [40.2, 99.1, 40.2, 99.1, 28.5, 28.5,
+      40.2, 99.1, 40.2, 99.1, 28.5, 28.5,
+      40.2, 28.5, 28.5,
+      14.3, 14.3, 14.3, 14.3, 14.3, 16.8, 16.8,
+      14.3, 14.3, 14.3, 14.3, 14.3, 16.8, 16.8]
 
-kds: [2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
-      2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
-      2.558, 1.814, 1.814,
-      0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068,
-      0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068]
+kds: [2.6, 6.3, 2.6, 6.3, 1.8, 1.8,
+      2.6, 6.3, 2.6, 6.3, 1.8, 1.8,
+      2.6, 1.8, 1.8,
+      0.9, 0.9, 0.9, 0.9, 0.9, 1.1, 1.1,
+      0.9, 0.9, 0.9, 0.9, 0.9, 1.1, 1.1]
 
-default_angles: [-0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
-                 -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
-                 0.0, 0.0, 0.0,
-                 0.2, 0.2, 0.0, 0.6, 0.0, 0.0, 0.0,
-                 0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0]
+default_angles: [-0.1, 0, 0, 0.3, -0.2, 0,
+                 -0.1, 0, 0, 0.3, -0.2, 0,
+                 0, 0, 0,
+                 0.35, 0.18, 0, 0.87, 0, 0, 0,
+                 0.35, -0.18, 0, 0.87, 0, 0, 0]
 
 action_scale: [0.5475, 0.3507, 0.5475, 0.3507, 0.4386, 0.4386,
                0.5475, 0.3507, 0.5475, 0.3507, 0.4386, 0.4386,
@@ -45,7 +49,7 @@ ls_iterations: 20
 # Use built-in PD actuators matching mjlab training
 builtin_pd: true
 
-xml_path: "GMR/assets/unitree_g1/g1_sim2sim_29dof.xml"
+xml_path: "teleopit/retargeting/gmr/assets/unitree_g1/g1_mjlab.xml"
 base_body: "pelvis"
 
 ang_vel_scale: 0.25
@@ -53,10 +57,10 @@ dof_pos_scale: 1.0
 dof_vel_scale: 0.05
 ankle_idx: [4, 5, 10, 11]
 
-mujoco_default_qpos: [0, 0, 0.76,
+mujoco_default_qpos: [0, 0, 0.8,
                       1, 0, 0, 0,
-                      -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
-                      -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
-                      0.0, 0.0, 0.0,
-                      0.2, 0.2, 0.0, 0.6, 0.0, 0.0, 0.0,
-                      0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0]
+                      -0.1, 0, 0, 0.3, -0.2, 0,
+                      -0.1, 0, 0, 0.3, -0.2, 0,
+                      0, 0, 0,
+                      0.35, 0.18, 0, 0.87, 0, 0, 0,
+                      0.35, -0.18, 0, 0.87, 0, 0, 0]

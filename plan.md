@@ -84,7 +84,6 @@
 
 ## Assumptions
 
-- `/home/wubingqian/project/teleop_projects/unitree_rl_mjlab` 在当前机器上长期可用，允许 Teleopit 直接依赖该路径作为默认 G1 真源。
 - 允许直接删除旧 G1 默认实现与参数，不需要兼容旧 ONNX、旧脚本或旧配置行为。
 - `unitree_rl_mjlab` 当前 G1 tracking/mimic 主线就是未来 Teleopit 唯一支持的默认基线。
 - 若后续要支持别的 G1 policy 变体，应重新引入另一套完整参数包，而不是在当前默认路径里混用。

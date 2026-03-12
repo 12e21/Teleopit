@@ -161,8 +161,12 @@ def render_pkl_sim2sim(
     controller_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "controller" / "rl_policy.yaml")
     default_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "default.yaml")
 
-    sim2sim_xml = project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml"
-    robot_cfg.xml_path = str(sim2sim_xml)
+    # Resolve robot XML path relative to project root
+    xml_rel = robot_cfg.xml_path
+    xml_path = (project_root / xml_rel).resolve()
+    if not xml_path.exists():
+        raise FileNotFoundError(f"Robot XML not found: {xml_path}")
+    robot_cfg.xml_path = str(xml_path)
 
     if not policy_path.exists():
         print(f"ERROR: ONNX policy not found at {policy_path}")
@@ -182,7 +186,7 @@ def render_pkl_sim2sim(
     obs_cfg = {
         "num_actions": int(robot_cfg.num_actions),
         "default_dof_pos": list(robot_cfg.default_angles),
-        "xml_path": str(sim2sim_xml),
+        "xml_path": str(xml_path),
         "anchor_body_name": str(OmegaConf.select(robot_cfg, "anchor_body_name", default="torso_link")),
     }
     obs_builder = MjlabObservationBuilder(obs_cfg)

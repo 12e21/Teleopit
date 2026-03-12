@@ -146,14 +146,9 @@ class TestTWIST2ObservationBuilder:
 # =====================================================================
 
 def _find_xml_path() -> str | None:
-    candidates = [
-        Path(__file__).parent.parent / "GMR" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml",
-        Path(__file__).parent.parent / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml",
-    ]
-    for p in candidates:
-        if p.exists():
-            return str(p)
-    return None
+    from conftest import find_g1_xml_path
+
+    return find_g1_xml_path()
 
 
 _XML_PATH = _find_xml_path()

@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from teleopit.bus.topics import TOPIC_ACTION, TOPIC_MIMIC_OBS, TOPIC_ROBOT_STATE
+from conftest import find_g1_xml_path
 
 
 def _has_module(name: str) -> bool:
@@ -28,7 +29,8 @@ def _asset_paths(project_root: Path) -> tuple[Path, Path, Path]:
     policy_raw = os.environ.get("TELEOPIT_TEST_POLICY_ONNX", "").strip()
     policy_env = Path(policy_raw).expanduser() if policy_raw else Path("__missing_policy__.onnx")
     bvh = project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "xsens_bvh_test" / "251021_04_boxing_120Hz_cm_3DsMax.bvh"
-    xml = project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml"
+    xml_raw = find_g1_xml_path()
+    xml = Path(xml_raw) if xml_raw is not None else Path("__missing_robot__.xml")
     return policy_env, bvh, xml
 
 

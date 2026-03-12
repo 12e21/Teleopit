@@ -47,6 +47,20 @@ def project_root():
     return Path(__file__).parent.parent
 
 
+def find_g1_xml_path() -> str | None:
+    """Return the preferred test XML path for G1 MuJoCo-based tests."""
+    root = Path(__file__).parent.parent
+    candidates = [
+        root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_mjlab.xml",
+        root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml",
+        root / "GMR" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml",
+    ]
+    for path in candidates:
+        if path.exists():
+            return str(path)
+    return None
+
+
 # ── Robot config values (from g1.yaml) ──────────────────────────
 
 NUM_ACTIONS = 29

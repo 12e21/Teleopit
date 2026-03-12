@@ -244,11 +244,12 @@ class TeleopPipeline:
             xml_path = Path(str(_cfg_get(robot_cfg, "xml_path", "")))
             if not xml_path.is_absolute():
                 candidate = (self._project_root / xml_path).resolve()
-                if candidate.exists():
-                    _cfg_set(robot_cfg, "xml_path", str(candidate))
-                else:
-                    fallback = self._project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml"
-                    _cfg_set(robot_cfg, "xml_path", str(fallback.resolve()))
+                if not candidate.exists():
+                    raise FileNotFoundError(
+                        f"robot.xml_path resolved to {candidate} which does not exist. "
+                        "Set an absolute path in robot config."
+                    )
+                _cfg_set(robot_cfg, "xml_path", str(candidate))
 
         if controller_cfg is not None:
             policy = str(_cfg_get(controller_cfg, "policy_path", ""))

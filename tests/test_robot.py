@@ -9,19 +9,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from conftest import requires_mujoco
-
-
-def _find_xml_path():
-    """Try to locate the recommended G1 sim2sim XML relative to the project."""
-    candidates = [
-        Path(__file__).parent.parent / "GMR" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml",
-        Path(__file__).parent.parent / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml",
-    ]
-    for p in candidates:
-        if p.exists():
-            return str(p)
-    return None
+from conftest import find_g1_xml_path, requires_mujoco
 
 
 def _make_cfg(xml_path: str):
@@ -56,7 +44,7 @@ def _make_cfg(xml_path: str):
         return None
 
 
-_XML_PATH = _find_xml_path()
+_XML_PATH = find_g1_xml_path()
 _skip_no_xml = pytest.mark.skipif(_XML_PATH is None, reason="Robot XML not found")
 
 

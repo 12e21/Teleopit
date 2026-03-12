@@ -13,21 +13,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from conftest import requires_mujoco
+from conftest import find_g1_xml_path, requires_mujoco
 
 
-def _find_xml_path() -> str | None:
-    candidates = [
-        Path(__file__).parent.parent / "GMR" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml",
-        Path(__file__).parent.parent / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml",
-    ]
-    for p in candidates:
-        if p.exists():
-            return str(p)
-    return None
-
-
-_XML_PATH = _find_xml_path()
+_XML_PATH = find_g1_xml_path()
 _skip_no_xml = pytest.mark.skipif(_XML_PATH is None, reason="Robot XML not found")
 
 _DEFAULT_ANGLES_29 = [

@@ -41,7 +41,8 @@ teleopit/                 # Core package
 │   └── gmr/              # Self-contained GMR (assets, IK solver, 17+ robot configs)
 │       └── assets/unitree_g1/
 │           ├── g1_mocap_29dof.xml    # Kinematic retarget only (has ctrlrange bug)
-│           └── g1_sim2sim_29dof.xml  # Sim2sim with correct actuator limits
+│           ├── g1_sim2sim_29dof.xml  # Legacy sim2sim (old PD gains)
+│           └── g1_mjlab.xml          # Default sim2sim — matches mjlab training XML
 ├── robots/
 │   └── mujoco_robot.py   # MuJoCoRobot — MuJoCo sim wrapper
 ├── sim/
@@ -69,7 +70,7 @@ outputs/                  # Rendered videos (gitignored)
 ### Sim2Sim Pipeline
 - Policy runs at 50Hz, PD control at 1000Hz (decimation=20), sim_dt=0.001
 - Action flow: `compute_action()` returns RAW action → `get_target_dof_pos()` applies clip [-10,10] + scale 0.5 + default_dof_pos
-- Must use `g1_sim2sim_29dof.xml` for sim2sim (not `g1_mocap_29dof.xml` which clamps torques to ±1 Nm)
+- Must use `g1_mjlab.xml` for sim2sim (not `g1_mocap_29dof.xml` which clamps torques to ±1 Nm)
 
 ### Multi-Viewer Support
 `SimulationLoop` supports three simultaneous viewer windows controlled by the `viewers` config:

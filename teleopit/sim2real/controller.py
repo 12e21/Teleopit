@@ -168,12 +168,12 @@ class Sim2RealController:
         xml_path = str(_cfg_get(robot_cfg, "xml_path", ""))
         if xml_path and not Path(xml_path).is_absolute():
             candidate = (self._project_root / xml_path).resolve()
-            if candidate.exists():
-                xml_path = str(candidate)
-            else:
-                # Fallback: GMR assets live inside the teleopit package
-                fallback = self._project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml"
-                xml_path = str(fallback.resolve())
+            if not candidate.exists():
+                raise FileNotFoundError(
+                    f"robot.xml_path resolved to {candidate} which does not exist. "
+                    "Set an absolute path in robot config."
+                )
+            xml_path = str(candidate)
         # Real robot does not provide base_pos / base_lin_vel, so sim2real is 154D-only.
         has_state_estimation = bool(_cfg_get(robot_cfg, "has_state_estimation", False))
         if has_state_estimation:
