@@ -26,7 +26,7 @@ def _validate_policy_path(cfg: DictConfig, script_name: str) -> None:
 def main(cfg: DictConfig) -> None:
     _validate_policy_path(cfg, "run_sim.py")
     pipeline = TeleopPipeline(cfg)
-    num_steps = int(cfg.get("num_steps", 1000))
+    num_steps = int(cfg.get("num_steps", 0))
     record = bool(cfg.get("record", False))
     result = pipeline.run(num_steps=num_steps, record=record)
     print(result)

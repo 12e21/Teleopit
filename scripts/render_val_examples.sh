@@ -23,7 +23,7 @@ DATASET_VERSION="twist2_full"
 NUM=3
 CLIP_CONTAINS=""
 SPLIT="val"
-TASK="Tracking-Flat-G1-v0"
+TASK="Tracking-Flat-G1-v0-NoStateEst"
 POLICY_HZ=50
 
 usage() {

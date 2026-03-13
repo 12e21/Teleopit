@@ -132,7 +132,7 @@ def _stats(values: list[float]) -> dict[str, float]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark G1 tracking policy.")
-    parser.add_argument("--task", type=str, default="Tracking-Flat-G1-v0")
+    parser.add_argument("--task", type=str, default="Tracking-Flat-G1-v0-NoStateEst")
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--motion_file", type=str, required=True)
     parser.add_argument("--num_envs", type=int, default=1)
