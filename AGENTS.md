@@ -11,7 +11,7 @@ Config: Hydra/OmegaConf YAML files in `teleopit/configs/`
 ## Architecture
 
 ```
-InputProvider (BVH file / UDP realtime / VR) → Retargeter (GMR) → ObservationBuilder (mjlab 160D sim / 154D real) → Controller (ONNX RL) → Robot (MuJoCo + PD / Unitree SDK)
+InputProvider (BVH file / UDP realtime / Pico4 VR) → Retargeter (GMR) → ObservationBuilder (mjlab 160D sim / 154D real) → Controller (ONNX RL) → Robot (MuJoCo + PD / Unitree SDK)
 ```
 
 Module-internal isolation: all modules run in-process, communicate via `InProcessBus` (zero-copy). Core interfaces defined as `typing.Protocol` in `teleopit/interfaces.py`.
@@ -35,6 +35,8 @@ teleopit/                 # Core package
 │   └── observation.py    # MjlabObservationBuilder — 160D (sim) / 154D (real) policy obs aligned with train_mimic
 ├── inputs/
 │   ├── bvh_provider.py       # BVHInputProvider — offline BVH file; exposes fps, bone_names, bone_parents
+│   ├── pico4_provider.py     # Pico4InputProvider — xrobotoolkit_sdk realtime body tracking input
+│   ├── rot_utils.py          # Quaternion helpers for input-space transforms
 │   └── udp_bvh_provider.py   # UDPBVHInputProvider — realtime UDP BVH; daemon receiver thread
 ├── retargeting/
 │   ├── core.py           # RetargetingModule + extract_mimic_obs()
@@ -124,6 +126,21 @@ python scripts/send_bvh_udp.py --bvh data/hc_mocap/wander.bvh --loop
 - `get_frame()` 始终返回最新帧（无内部计数器），与 `SimulationLoop` 的 `bvh_idx` 兼容
 - `is_available()` 持续返回 True → 循环不因 input 耗尽退出
 - `fps=30`（固定），`human_height` 从 reference BVH frame-0 FK 计算
+
+### Pico4 Realtime Input
+
+支持通过 `xrobotoolkit_sdk` 接收 Pico4 实时全身动捕数据，入口脚本：
+
+```bash
+python scripts/run_pico4_sim.py controller.policy_path=policy.onnx
+python scripts/run_pico4_sim2real.py controller.policy_path=policy.onnx
+```
+
+**`Pico4InputProvider` 关键设计**：
+- 输出骨骼名使用 `xrobot_to_g1.json` 对应的人体命名（如 `Pelvis`、`Left_Hip`、`Right_Shoulder`）
+- provider 对 SDK 位姿做一层输入空间变换，以匹配当前 `xrobot` retarget 配置
+- 不在代码注释中把该变换固定解释为某个公开坐标系映射；若 SDK 版本、设备固件或上游约定变化，必须用实际 retarget/sim2sim 结果重新验证
+- 依赖专有 `xrobotoolkit_sdk`，需用户手动安装；`pyproject.toml` 中不自动拉取该包
 
 **`SimulationLoop` 变更**：
 - 新增 `realtime` config flag：即使无 viewer 也进行 wall-clock 限速

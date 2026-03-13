@@ -8,7 +8,7 @@ from omegaconf import DictConfig
 from teleopit.bus.in_process import InProcessBus
 from teleopit.controllers.observation import MjlabObservationBuilder
 from teleopit.controllers.rl_policy import RLPolicyController
-from teleopit.inputs import BVHInputProvider, UDPBVHInputProvider
+from teleopit.inputs import BVHInputProvider, Pico4InputProvider, UDPBVHInputProvider
 from teleopit.recording.hdf5_recorder import HDF5Recorder
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.robots.mujoco_robot import MuJoCoRobot
@@ -125,7 +125,12 @@ class TeleopPipeline:
 
         # Use provider's human_format (may be auto-adjusted, e.g. hc_mocap_no_toe)
         if hasattr(self.input_provider, "human_format"):
-            human_format = f"bvh_{self.input_provider.human_format}"
+            provider_format = self.input_provider.human_format
+            # Pico4/xrobot formats don't use the bvh_ prefix
+            if isinstance(self.input_provider, Pico4InputProvider):
+                human_format = provider_format
+            else:
+                human_format = f"bvh_{provider_format}"
         else:
             human_format = _cfg_get(input_cfg, "human_format", None)
             if not human_format or str(human_format) == "null":
@@ -179,6 +184,12 @@ class TeleopPipeline:
 
     def _build_input_provider(self, input_cfg: Any) -> Any:
         provider_kind = str(_cfg_get(input_cfg, "provider", "bvh")).lower()
+
+        if provider_kind == "pico4":
+            return Pico4InputProvider(
+                human_format=str(_cfg_get(input_cfg, "human_format", "xrobot")),
+                timeout=float(_cfg_get(input_cfg, "pico4_timeout", 60.0)),
+            )
 
         if provider_kind == "udp_bvh":
             ref_bvh = str(_cfg_get(input_cfg, "reference_bvh", ""))
@@ -265,7 +276,7 @@ class TeleopPipeline:
 
         if input_cfg is not None:
             provider_kind = str(_cfg_get(input_cfg, "provider", "bvh")).lower()
-            if provider_kind != "udp_bvh":
+            if provider_kind not in ("udp_bvh", "pico4"):
                 bvh_file = str(_cfg_get(input_cfg, "bvh_file", ""))
                 if not bvh_file or bvh_file == "None":
                     default_bvh = self._project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "xsens_bvh_test" / "251021_04_boxing_120Hz_cm_3DsMax.bvh"

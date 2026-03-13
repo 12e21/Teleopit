@@ -1,7 +1,7 @@
 defaults:
   - robot: g1
   - controller: rl_policy
-  - input: udp_bvh
+  - input: pico4
   - _self_
 
 policy_hz: 50.0

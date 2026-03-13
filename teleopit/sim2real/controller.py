@@ -1,16 +1,12 @@
 """Sim2Real controller -- state machine + dual-mode control loop.
 
 Supports two operating modes for a physical Unitree G1:
-- **Gamepad**: LocoClient sends velocity commands (robot stays in "ai" mode)
-- **Mocap**: Debug mode + direct LowCmd joint control via RL policy
-
-Prerequisites:
-    User must manually activate ai_sport walking via remote controller
-    BEFORE starting this script (boot → damping → locked standing → walking).
+- **Standing**: RL policy maintains balance with fixed default-pose reference
+- **Mocap**: RL policy tracks retargeted motion commands
 
 State machine:
-    IDLE ──Start──▶ GAMEPAD ──Y──▶ MOCAP ──X──▶ DAMPING
-    Any ──L1+R1──▶ DAMPING ──Start──▶ GAMEPAD (if ai_sport active)
+    IDLE ──Start──▶ STANDING ──Y──▶ MOCAP ──X──▶ STANDING
+    Any  ──L1+R1──▶ DAMPING  ──Start──▶ STANDING
 """
 
 from __future__ import annotations
@@ -27,6 +23,7 @@ from numpy.typing import NDArray
 from teleopit.controllers.observation import MjlabObservationBuilder, align_motion_qpos_yaw
 from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.controllers.rl_policy import RLPolicyController
+from teleopit.inputs.pico4_provider import Pico4InputProvider
 from teleopit.inputs.udp_bvh_provider import UDPBVHInputProvider
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.sim2real.remote import UnitreeRemote
@@ -49,19 +46,17 @@ def _cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
 
 class RobotMode(Enum):
     IDLE = "idle"          # Script waiting, robot controlled by remote
-    GAMEPAD = "gamepad"    # LocoClient active, joystick walking
-    MOCAP = "mocap"        # Debug mode, RL policy, 250Hz LowCmd
+    STANDING = "standing"  # Debug mode, RL policy holds default pose
+    MOCAP = "mocap"        # Debug mode, RL policy tracks motion commands
     DAMPING = "damping"    # Emergency stop / recovery
 
 
 class Sim2RealController:
-    """G1 real-robot controller -- gamepad/mocap dual mode with state machine.
+    """G1 real-robot controller -- standing/mocap dual mode with state machine.
 
-    Gamepad mode: robot stays in "ai" mode, LocoClient sends velocity commands.
-    Mocap mode: enter debug mode, direct LowCmd via RL policy at 250Hz.
-
-    User must activate ai_sport via remote before starting this script.
-    The script does NOT attempt to activate ai_sport via SDK.
+    Standing mode: enter debug mode, RL policy maintains balance at default pose.
+    Mocap mode: RL policy tracks retargeted motion commands.
+    Both modes share the same RL policy inference pipeline.
     """
 
     def __init__(self, cfg: Any) -> None:
@@ -80,41 +75,42 @@ class Sim2RealController:
         self.robot = UnitreeG1Robot(real_cfg)
         self.remote = UnitreeRemote()
 
-        # ---- LocoClient (created in _enter_gamepad) ----
-        self._loco_client: Any = None
-
-        # ---- Gamepad speed limits ----
-        gp_cfg = _cfg_get(cfg, "gamepad", {})
-        self._max_vx: float = float(_cfg_get(gp_cfg, "max_vx", 0.5))
-        self._max_vy: float = float(_cfg_get(gp_cfg, "max_vy", 0.3))
-        self._max_vyaw: float = float(_cfg_get(gp_cfg, "max_vyaw", 0.5))
-
         # ---- Mocap pipeline (reuse existing components) ----
         input_cfg = _cfg_get(cfg, "input")
         controller_cfg = _cfg_get(cfg, "controller")
         robot_cfg = _cfg_get(cfg, "robot")
 
-        # Resolve reference BVH path
-        ref_bvh = str(_cfg_get(input_cfg, "reference_bvh", ""))
-        if ref_bvh and not Path(ref_bvh).is_absolute():
-            ref_bvh = str((self._project_root / ref_bvh).resolve())
+        # Build input provider based on config
+        provider_kind = str(_cfg_get(input_cfg, "provider", "udp_bvh")).lower()
 
-        self.udp_provider = UDPBVHInputProvider(
-            reference_bvh=ref_bvh,
-            host=str(_cfg_get(input_cfg, "udp_host", "")),
-            port=int(_cfg_get(input_cfg, "udp_port", 1118)),
-            human_format=str(_cfg_get(input_cfg, "bvh_format", "hc_mocap")),
-            timeout=float(_cfg_get(input_cfg, "udp_timeout", 30.0)),
-        )
-
-        # Use provider's human_format (may be auto-adjusted, e.g. hc_mocap_no_toe)
-        if hasattr(self.udp_provider, "human_format"):
-            human_format = f"bvh_{self.udp_provider.human_format}"
+        if provider_kind == "pico4":
+            self.input_provider: Pico4InputProvider | UDPBVHInputProvider = Pico4InputProvider(
+                human_format=str(_cfg_get(input_cfg, "human_format", "xrobot")),
+                timeout=float(_cfg_get(input_cfg, "pico4_timeout", 60.0)),
+            )
+            human_format = str(_cfg_get(input_cfg, "human_format", "xrobot"))
         else:
-            human_format = _cfg_get(input_cfg, "human_format", None)
-            if not human_format or str(human_format) == "null":
-                bvh_format = str(_cfg_get(input_cfg, "bvh_format", "hc_mocap"))
-                human_format = f"bvh_{bvh_format}"
+            # Default: UDP BVH provider
+            ref_bvh = str(_cfg_get(input_cfg, "reference_bvh", ""))
+            if ref_bvh and not Path(ref_bvh).is_absolute():
+                ref_bvh = str((self._project_root / ref_bvh).resolve())
+
+            self.input_provider = UDPBVHInputProvider(
+                reference_bvh=ref_bvh,
+                host=str(_cfg_get(input_cfg, "udp_host", "")),
+                port=int(_cfg_get(input_cfg, "udp_port", 1118)),
+                human_format=str(_cfg_get(input_cfg, "bvh_format", "hc_mocap")),
+                timeout=float(_cfg_get(input_cfg, "udp_timeout", 30.0)),
+            )
+
+            # Use provider's human_format (may be auto-adjusted, e.g. hc_mocap_no_toe)
+            if hasattr(self.input_provider, "human_format"):
+                human_format = f"bvh_{self.input_provider.human_format}"
+            else:
+                human_format = _cfg_get(input_cfg, "human_format", None)
+                if not human_format or str(human_format) == "null":
+                    bvh_format = str(_cfg_get(input_cfg, "bvh_format", "hc_mocap"))
+                    human_format = f"bvh_{bvh_format}"
 
         self.retargeter = RetargetingModule(
             robot_name=str(_cfg_get(input_cfg, "robot_name", "unitree_g1")),
@@ -211,7 +207,12 @@ class Sim2RealController:
         )
         self.num_actions: int = int(_cfg_get(robot_cfg, "num_actions", 29))
 
-        # ---- Mocap mode state ----
+        # ---- Standing mode reference qpos ----
+        self._standing_qpos = np.zeros(36, dtype=np.float64)
+        self._standing_qpos[3] = 1.0  # identity quaternion w=1
+        self._standing_qpos[7:36] = self.default_angles.astype(np.float64)
+
+        # ---- Policy state (shared by STANDING and MOCAP) ----
         self._last_action: Float32Array = np.zeros(self.num_actions, dtype=np.float32)
         self._last_retarget_qpos: Float64Array | None = None
 
@@ -220,51 +221,10 @@ class Sim2RealController:
         self._check_frames: int = int(_cfg_get(mocap_sw, "check_frames", 10))
         self._max_pos_value: float = float(_cfg_get(mocap_sw, "max_position_value", 5.0))
 
-        # ---- Startup: check mode and warn ----
-        self._check_startup_mode()
-
         logger.info(
-            "Sim2RealController ready | mode=IDLE | policy_hz=%.0f | "
-            "max_vx=%.1f max_vy=%.1f max_vyaw=%.1f",
-            self.policy_hz, self._max_vx, self._max_vy, self._max_vyaw,
+            "Sim2RealController ready | mode=IDLE | policy_hz=%.0f",
+            self.policy_hz,
         )
-
-    # ------------------------------------------------------------------
-    # Startup
-    # ------------------------------------------------------------------
-
-    def _check_startup_mode(self) -> None:
-        """Check robot mode at startup and log status (no SDK mode changes)."""
-        result = self.robot.check_mode()
-        if result is None:
-            logger.warning(
-                "Could not query motion mode -- MotionSwitcher may not be available"
-            )
-            return
-
-        mode_name = result.get("name", "") if isinstance(result, dict) else str(result)
-        if mode_name:
-            logger.info("Startup: robot in '%s' mode -- ready", mode_name)
-        else:
-            logger.warning(
-                "Startup: no active mode detected. "
-                "Please activate ai_sport via remote controller "
-                "(L1+A → L1+UP) before pressing Start."
-            )
-
-    # ------------------------------------------------------------------
-    # LocoClient management (fire-and-forget, matching xr_teleoperate)
-    # ------------------------------------------------------------------
-
-    def _create_loco_client(self) -> Any:
-        """Create LocoClient with fire-and-forget timeout."""
-        from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
-
-        client = LocoClient()
-        client.SetTimeout(0.0001)  # Fire-and-forget (matching xr_teleoperate)
-        client.Init()
-        logger.info("LocoClient created (fire-and-forget, timeout=0.0001s)")
-        return client
 
     # ------------------------------------------------------------------
     # Main control loop
@@ -273,7 +233,7 @@ class Sim2RealController:
     def run(self) -> None:
         """Main control loop at policy_hz."""
         logger.info(
-            "Control loop started | mode=IDLE | press Start to enter GAMEPAD"
+            "Control loop started | mode=IDLE | press Start to enter STANDING"
         )
         dt = 1.0 / self.policy_hz
 
@@ -299,8 +259,8 @@ class Sim2RealController:
                 self._handle_transitions()
 
                 # 4. Execute current mode
-                if self.mode == RobotMode.GAMEPAD:
-                    self._gamepad_step()
+                if self.mode == RobotMode.STANDING:
+                    self._standing_step()
                 elif self.mode == RobotMode.MOCAP:
                     self._mocap_step()
 
@@ -314,31 +274,45 @@ class Sim2RealController:
     # Mode execution
     # ------------------------------------------------------------------
 
-    def _gamepad_step(self) -> None:
-        """Gamepad mode: read joystick -> LocoClient.Move(vx, vy, vyaw)."""
-        if self._loco_client is None:
-            return
+    def _standing_step(self) -> None:
+        """Standing mode: feed fixed default-pose reference to RL policy."""
+        robot_state = self.robot.get_state()
 
-        vx = self.remote.ly * self._max_vx
-        vy = self.remote.lx * self._max_vy
-        vyaw = self.remote.rx * self._max_vyaw
+        # Build standing reference qpos aligned to robot's current yaw
+        qpos = self._standing_qpos.copy()
+        align_motion_qpos_yaw(
+            np.asarray(robot_state.quat, dtype=np.float32), qpos
+        )
 
-        try:
-            self._loco_client.Move(vx, vy, vyaw)
-        except Exception:
-            pass  # Fire-and-forget -- errors are expected (timeout)
+        # Standing → zero joint velocity reference
+        motion_joint_vel = np.zeros(self.num_actions, dtype=np.float32)
+
+        obs = self.obs_builder.build(
+            robot_state,
+            np.asarray(qpos[:7 + self.num_actions], dtype=np.float32),
+            motion_joint_vel,
+            self._last_action,
+        )
+        obs = self._validate_observation_for_policy(obs)
+
+        action = self.policy.compute_action(obs)
+        target_dof_pos = self.policy.get_target_dof_pos(action)
+        self.robot.send_positions(target_dof_pos)
+
+        self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
+        self._last_retarget_qpos = qpos.copy()
 
     def _mocap_step(self) -> None:
-        """Mocap mode: UDP BVH -> retarget -> policy -> update LowCmd targets."""
-        if not self.udp_provider.is_available():
-            logger.warning("UDP provider unavailable -- entering damping")
+        """Mocap mode: input provider -> retarget -> policy -> update LowCmd targets."""
+        if not self.input_provider.is_available():
+            logger.warning("Input provider unavailable -- entering damping")
             self._enter_damping()
             return
 
         try:
-            human_frame = self.udp_provider.get_frame()
-        except TimeoutError:
-            logger.warning("UDP timeout -- entering damping")
+            human_frame = self.input_provider.get_frame()
+        except (TimeoutError, RuntimeError):
+            logger.warning("Input provider error -- entering damping")
             self._enter_damping()
             return
 
@@ -394,73 +368,91 @@ class Sim2RealController:
         if self.mode == RobotMode.IDLE:
             if self.remote.start.on_pressed:
                 logger.info("Start pressed (from IDLE)")
-                self._enter_gamepad()
+                self._enter_standing()
 
-        elif self.mode == RobotMode.GAMEPAD:
+        elif self.mode == RobotMode.STANDING:
             if self.remote.Y.on_pressed:
                 if self._can_switch_to_mocap():
                     logger.info("Y pressed -> entering MOCAP")
                     self._transition_to_mocap()
                 else:
-                    logger.warning("Cannot switch to MOCAP -- UDP check failed")
+                    logger.warning("Cannot switch to MOCAP -- input check failed")
 
         elif self.mode == RobotMode.MOCAP:
             if self.remote.X.on_pressed:
-                logger.info("X pressed -> exiting MOCAP to DAMPING")
-                self._enter_damping()
+                logger.info("X pressed -> returning to STANDING")
+                self._enter_standing()
 
         elif self.mode == RobotMode.DAMPING:
             if self.remote.start.on_pressed:
                 logger.info("Start pressed (from DAMPING)")
-                self._recover_from_damping()
+                self._enter_standing()
 
     # ------------------------------------------------------------------
-    # IDLE -> GAMEPAD
+    # Enter STANDING (from IDLE, MOCAP, or DAMPING)
     # ------------------------------------------------------------------
 
-    def _enter_gamepad(self) -> None:
-        """Enter gamepad mode: verify ai_sport is active, create LocoClient."""
-        result = self.robot.check_mode()
-        mode_name = ""
-        if result is not None:
-            mode_name = result.get("name", "") if isinstance(result, dict) else str(result)
+    def _enter_standing(self) -> None:
+        """Enter standing mode: debug mode + RL policy holds default pose.
 
-        if not mode_name:
-            logger.warning(
-                "No active mode -- cannot enter GAMEPAD. "
-                "Please activate ai_sport via remote controller first."
-            )
-            return
+        Works from IDLE, MOCAP (already in debug mode), or DAMPING.
+        """
+        already_in_debug = self.mode in (RobotMode.STANDING, RobotMode.MOCAP)
 
-        logger.info("Mode '%s' active -- creating LocoClient...", mode_name)
-        try:
-            self._loco_client = self._create_loco_client()
-        except Exception as exc:
-            logger.error("Failed to create LocoClient: %s", exc)
-            return
+        if not already_in_debug:
+            logger.info("Entering debug mode...")
+            ok = self.robot.enter_debug_mode()
+            if not ok:
+                logger.error("Failed to enter debug mode -- staying in %s", self.mode.value)
+                return
+            time.sleep(0.5)
 
-        self.mode = RobotMode.GAMEPAD
-        logger.info("Mode -> GAMEPAD (LocoClient active, joystick controls walking)")
+        # Lock joints to current position (prevent collapse during init)
+        logger.info("Locking joints to current position...")
+        self.robot.lock_all_joints()
+        time.sleep(0.3)
+
+        # Initialize policy state
+        state = self.robot.get_state()
+        init_qpos = np.zeros(36, dtype=np.float64)
+        init_qpos[3:7] = state.quat.astype(np.float64)
+        init_qpos[7:36] = state.qpos.astype(np.float64)
+        self._last_retarget_qpos = init_qpos
+        self._last_action = np.zeros(self.num_actions, dtype=np.float32)
+        self.obs_builder.reset()
+
+        self.mode = RobotMode.STANDING
+        logger.info("Mode -> STANDING (RL policy maintaining balance at default pose)")
 
     # ------------------------------------------------------------------
-    # GAMEPAD -> MOCAP
+    # STANDING -> MOCAP
     # ------------------------------------------------------------------
 
     def _can_switch_to_mocap(self) -> bool:
-        """Verify UDP signal is stable and values are reasonable."""
-        if not self.udp_provider.is_available():
-            logger.warning("Mocap check: UDP provider not available")
+        """Verify input signal is stable and values are reasonable."""
+        if not self.input_provider.is_available():
+            logger.warning("Mocap check: input provider not available")
             return False
 
-        if not self.udp_provider._frame_ready.is_set():
-            logger.warning("Mocap check: no UDP data received yet")
-            return False
+        # For UDP BVH provider, also check if initial data has been received
+        if hasattr(self.input_provider, "_frame_ready"):
+            if not self.input_provider._frame_ready.is_set():
+                logger.warning("Mocap check: no data received yet")
+                return False
+
+        # For Pico4 provider, check SDK data availability before calling
+        # get_frame() to avoid blocking the control loop for up to
+        # pico4_timeout on first frame.
+        if hasattr(self.input_provider, "_xrt"):
+            if not self.input_provider._xrt.is_body_data_available():
+                logger.warning("Mocap check: Pico4 body data not available yet")
+                return False
 
         valid_count = 0
         for _ in range(self._check_frames + 5):
             try:
-                frame = self.udp_provider.get_frame()
-            except TimeoutError:
+                frame = self.input_provider.get_frame()
+            except (TimeoutError, RuntimeError):
                 return False
 
             all_valid = True
@@ -489,42 +481,12 @@ class Sim2RealController:
         return False
 
     def _transition_to_mocap(self) -> None:
-        """Switch from GAMEPAD -> MOCAP.
+        """Switch from STANDING -> MOCAP.
 
-        1. Stop walking via LocoClient
-        2. Enter debug mode (ReleaseMode loop)
-        3. Lock all joints (creates LowCmd publisher + 250Hz thread)
-        4. Read current state as initial retarget reference
+        Already in debug mode from STANDING, so just read current state
+        and start interpolation for smooth transition.
         """
-        # Stop walking
-        if self._loco_client is not None:
-            try:
-                self._loco_client.StopMove()
-            except Exception:
-                pass
-            time.sleep(0.5)
-        self._loco_client = None
-
-        # Enter debug mode (release "ai" -> low-level control)
-        logger.info("Entering debug mode for low-level control...")
-        ok = self.robot.enter_debug_mode()
-        if not ok:
-            logger.error("Failed to enter debug mode -- staying in GAMEPAD")
-            # Recreate LocoClient since we destroyed it
-            try:
-                self._loco_client = self._create_loco_client()
-            except Exception:
-                logger.error("Failed to recreate LocoClient -- entering IDLE")
-                self.mode = RobotMode.IDLE
-            return
-        time.sleep(0.5)
-
-        # Lock all joints to current position (prevent collapse)
-        logger.info("Locking joints to current position...")
-        self.robot.lock_all_joints()
-        time.sleep(0.5)
-
-        # Read current state as initial
+        # Read current state as initial reference for interpolation
         state = self.robot.get_state()
         init_qpos = np.zeros(36, dtype=np.float64)
         init_qpos[3:7] = state.quat.astype(np.float64)
@@ -537,7 +499,7 @@ class Sim2RealController:
         self.obs_builder.reset()
 
         self.mode = RobotMode.MOCAP
-        logger.info("Mode -> MOCAP (debug mode, 250Hz LowCmd publishing)")
+        logger.info("Mode -> MOCAP (tracking motion commands)")
 
     # ------------------------------------------------------------------
     # Emergency stop / damping
@@ -545,48 +507,15 @@ class Sim2RealController:
 
     def _enter_damping(self) -> None:
         """Enter damping mode from any state."""
-        if self.mode == RobotMode.MOCAP:
-            logger.info("DAMPING: sending LowCmd damping (from MOCAP)...")
+        if self.mode in (RobotMode.STANDING, RobotMode.MOCAP):
+            logger.info("DAMPING: sending LowCmd damping...")
             self.robot.set_damping()
             time.sleep(0.5)
-            # Exit debug mode so user can re-activate ai_sport via remote
             logger.info("DAMPING: exiting debug mode...")
             self.robot.exit_debug_mode()
-        elif self._loco_client is not None:
-            logger.info("DAMPING: LocoClient.Damp() (from GAMEPAD)...")
-            try:
-                self._loco_client.Damp()
-            except Exception:
-                pass
 
-        self._loco_client = None
         self.mode = RobotMode.DAMPING
-        logger.info(
-            "Mode -> DAMPING (restart robot and re-activate ai_sport "
-            "via remote, then press Start)"
-        )
-
-    def _recover_from_damping(self) -> None:
-        """Attempt recovery from DAMPING: check if ai_sport is active."""
-        result = self.robot.check_mode()
-        mode_name = ""
-        if result is not None:
-            mode_name = result.get("name", "") if isinstance(result, dict) else str(result)
-
-        if not mode_name:
-            logger.warning(
-                "No active mode -- please re-activate ai_sport via "
-                "remote controller, then press Start again."
-            )
-            return
-
-        logger.info("ai_sport active (mode='%s') -- entering GAMEPAD...", mode_name)
-        try:
-            self._loco_client = self._create_loco_client()
-            self.mode = RobotMode.GAMEPAD
-            logger.info("Mode -> GAMEPAD (recovered from DAMPING)")
-        except Exception as exc:
-            logger.error("Failed to create LocoClient: %s", exc)
+        logger.info("Mode -> DAMPING (press Start to re-enter STANDING)")
 
     # ------------------------------------------------------------------
     # Helpers
@@ -633,14 +562,18 @@ class Sim2RealController:
     def shutdown(self) -> None:
         """Clean shutdown."""
         logger.info("Shutting down Sim2RealController")
-        if self.mode == RobotMode.MOCAP:
+        if self.mode in (RobotMode.STANDING, RobotMode.MOCAP):
             try:
                 self.robot.set_damping()
                 time.sleep(0.5)
             except Exception:
                 pass
+            try:
+                self.robot.exit_debug_mode()
+            except Exception:
+                pass
         try:
-            self.udp_provider.close()
+            self.input_provider.close()
         except Exception:
             pass
         try:

@@ -1,19 +1,13 @@
-"""G1 sim2real control entry point — standing/mocap dual mode."""
+"""Online sim2sim entry point — receives real-time Pico4 full-body tracking data."""
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
-
-# Add Unitree SDK2 Python to sys.path (git submodule in third_party/)
-_SDK_PATH = Path(__file__).resolve().parent.parent / "third_party" / "unitree_sdk2_python"
-if _SDK_PATH.exists():
-    sys.path.insert(0, str(_SDK_PATH))
 
 import hydra
 from omegaconf import DictConfig
 
-from teleopit.sim2real.controller import Sim2RealController
+from teleopit.pipeline import TeleopPipeline
 
 
 def _validate_policy_path(cfg: DictConfig, script_name: str) -> None:
@@ -30,14 +24,18 @@ def _validate_policy_path(cfg: DictConfig, script_name: str) -> None:
         raise FileNotFoundError(f"ONNX policy file not found: {resolved}")
 
 
-@hydra.main(version_base=None, config_path="../teleopit/configs", config_name="sim2real")
+@hydra.main(version_base=None, config_path="../teleopit/configs", config_name="pico4_sim")
 def main(cfg: DictConfig) -> None:
-    _validate_policy_path(cfg, "run_sim2real.py")
-    controller = Sim2RealController(cfg)
+    _validate_policy_path(cfg, "run_pico4_sim.py")
+    pipeline = TeleopPipeline(cfg)
+    num_steps = int(cfg.get("num_steps", 0))
+    print("Waiting for Pico4 body tracking data...")
     try:
-        controller.run()
+        result = pipeline.run(num_steps=num_steps)
+        print(result)
     finally:
-        controller.shutdown()
+        if hasattr(pipeline.input_provider, "close"):
+            pipeline.input_provider.close()
 
 
 if __name__ == "__main__":

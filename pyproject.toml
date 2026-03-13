@@ -48,6 +48,10 @@ train = [
     "wandb>=0.15.0",
     "tqdm>=4.65.0",
 ]
+pico4 = [
+    # xrobotoolkit_sdk is a proprietary Pico4 SDK — install manually from vendor package
+    "teleopit[sim2real]",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

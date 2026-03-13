@@ -1,4 +1,4 @@
-"""G1 sim2real control entry point — standing/mocap dual mode."""
+"""G1 sim2real control entry point with Pico4 full-body tracking — standing/mocap dual mode."""
 
 from __future__ import annotations
 
@@ -30,9 +30,9 @@ def _validate_policy_path(cfg: DictConfig, script_name: str) -> None:
         raise FileNotFoundError(f"ONNX policy file not found: {resolved}")
 
 
-@hydra.main(version_base=None, config_path="../teleopit/configs", config_name="sim2real")
+@hydra.main(version_base=None, config_path="../teleopit/configs", config_name="pico4_sim2real")
 def main(cfg: DictConfig) -> None:
-    _validate_policy_path(cfg, "run_sim2real.py")
+    _validate_policy_path(cfg, "run_pico4_sim2real.py")
     controller = Sim2RealController(cfg)
     try:
         controller.run()
