@@ -423,6 +423,12 @@ class SimulationLoop:
 
                 mimic_obs = extract_mimic_obs(qpos=qpos, last_qpos=self._last_retarget_qpos, dt=1.0 / self.policy_hz)
 
+                # Snapshot retarget qpos BEFORE physics alignment for the
+                # retarget viewer.  The viewer should show the pure kinematic
+                # reference, not the physics-coupled version which jitters
+                # when the sim robot is unstable.
+                retarget_viewer_qpos = qpos.copy()
+
                 # Align motion root XY to robot's current XY position.
                 # The retargeter outputs BVH world coordinates, but the policy
                 # was trained with env_origins alignment (small anchor offsets).
@@ -488,7 +494,7 @@ class SimulationLoop:
                 if retarget_entry is not None and retarget_entry[2].value:
                     arr = retarget_entry[1]
                     with arr.get_lock():
-                        arr[:len(qpos)] = qpos.tolist()
+                        arr[:len(retarget_viewer_qpos)] = retarget_viewer_qpos.tolist()
 
                 # --- Write BVH positions to shared memory ---
                 if new_bvh_frame and cached_human_frame is not None:
@@ -635,7 +641,7 @@ class SimulationLoop:
             joint_pos = np.asarray(retargeted[2], dtype=np.float64).reshape(-1)
             qpos = np.concatenate((base_pos, base_rot, joint_pos))
         else:
-            qpos = np.asarray(retargeted, dtype=np.float64).reshape(-1)
+            qpos = np.array(retargeted, dtype=np.float64).reshape(-1)
         if qpos.shape[0] < 36:
             raise ValueError(f"Retargeted qpos too short: {qpos.shape[0]} (need >= 36)")
         return qpos
