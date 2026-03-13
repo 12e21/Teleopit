@@ -248,6 +248,50 @@ RuntimeError: indices should be either on cpu or on the same device as the index
 
 ---
 
+## 问题 6：sim2sim 中机器人脚滑（benchmark 正常但 ONNX 推理脚打滑）
+
+### 现象
+
+用 `benchmark.py` 渲染的视频中 tracking 效果正常，但在 `run_sim.py` 用导出的 ONNX 模型跑 sim2sim 时，机器人脚部非常滑，无法稳定站立或行走。
+
+### 根本原因
+
+sim2sim 配置（`g1.yaml` + `g1_mjlab.xml`）与训练环境存在多处关键参数不一致：
+
+1. **default_angles 不匹配（最关键）**：安装的 mjlab 包中 `get_g1_robot_cfg()` 使用 `KNEES_BENT_KEYFRAME`（hip_pitch=-0.312, knee=0.669），但 sim2sim 的 `g1.yaml` 使用了参考项目的 `HOME_KEYFRAME`（hip_pitch=-0.1, knee=0.3）。这会导致：
+   - **Action 偏移错误**：`target = action * scale + default_pos` 中 default_pos 不匹配，policy 输出 0 时关节目标差最大 0.369 rad（knee）
+   - **Observation 偏差**：`joint_pos_rel = qpos - default_pos` 中 default_pos 不匹配，同一物理姿态产生不同观测值
+
+2. **缺少 joint armature**：训练环境设置了非零 armature（如 hip_roll/knee: 0.025, hip_pitch: 0.010），sim2sim XML 所有关节 armature=0，导致关节响应过快、过冲、抖动
+
+3. **condim 不一致**：训练环境 foot condim=3、其他 condim=1；sim2sim XML default collision class condim=6
+
+### 解决方案
+
+1. **更新 `teleopit/configs/robot/g1.yaml`**：将 `default_angles` 和 `mujoco_default_qpos` 改为与训练模型（安装的 mjlab `get_g1_robot_cfg()`）一致的值
+
+2. **更新 `g1_mjlab.xml`**：
+   - 在每个 `<joint>` 上添加与训练一致的 `armature` 属性
+   - 将 collision class 的 `condim` 从 6 改为 1（foot capsule 改为 3）
+   - 更新 keyframe 和 pelvis 初始高度
+
+### 排查方法
+
+确认 sim2sim 使用的默认角度与训练一致：
+
+```python
+# 查看训练使用的默认角度
+from mjlab.asset_zoo.robots import get_g1_robot_cfg
+cfg = get_g1_robot_cfg()
+print(cfg.init_state.joint_pos)  # 应与 g1.yaml default_angles 一致
+```
+
+### 注意
+
+此修复同时影响 sim2real 路径（`default_angles` 被 `rl_policy.py` 和 `observation.py` 共用），修复后真机效果也应改善。
+
+---
+
 ## 其他问题
 
 如遇到其他问题，请在 [GitHub Issues](https://github.com/your-repo/issues) 提交，附上：
