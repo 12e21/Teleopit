@@ -329,6 +329,7 @@ def render_sim2sim(
     from omegaconf import OmegaConf
 
     from teleopit.pipeline import TeleopPipeline
+    from teleopit.controllers.observation import align_motion_qpos_yaw
     from teleopit.retargeting.core import extract_mimic_obs
 
     cfg = OmegaConf.create(
@@ -391,8 +392,9 @@ def render_sim2sim(
         )
 
         state = pipeline.robot.get_state()
-        # Match SimulationLoop: align motion root XY to the robot's current base XY.
+        # Match SimulationLoop: align motion root XY and yaw to robot's current pose.
         qpos[0:2] = np.asarray(state.base_pos[:2], dtype=np.float64)
+        align_motion_qpos_yaw(np.asarray(state.quat, dtype=np.float32), qpos)
         obs = loop._build_observation(
             state=state,
             mimic_obs=mimic_obs,

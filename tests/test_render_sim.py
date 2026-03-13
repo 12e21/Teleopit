@@ -40,6 +40,7 @@ def _install_render_sim_fakes(monkeypatch, *, builtin_pd: bool, provider_fps: in
             return SimpleNamespace(
                 qpos=np.zeros(num_actions, dtype=np.float32),
                 qvel=np.zeros(num_actions, dtype=np.float32),
+                quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
                 base_pos=np.array([7.0, 8.0, 0.76], dtype=np.float32),
             )
 

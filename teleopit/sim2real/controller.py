@@ -24,7 +24,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from teleopit.controllers.observation import MjlabObservationBuilder
+from teleopit.controllers.observation import MjlabObservationBuilder, align_motion_qpos_yaw
 from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.inputs.udp_bvh_provider import UDPBVHInputProvider
@@ -349,6 +349,9 @@ class Sim2RealController:
 
         # Robot state from SDK
         robot_state = self.robot.get_state()
+
+        # Align motion root yaw to robot's current yaw heading.
+        align_motion_qpos_yaw(np.asarray(robot_state.quat, dtype=np.float32), qpos)
 
         if qpos.shape[0] < 7 + self.num_actions:
             raise ValueError(

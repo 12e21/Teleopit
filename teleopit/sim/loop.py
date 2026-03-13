@@ -8,7 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from teleopit.bus.topics import TOPIC_ACTION, TOPIC_MIMIC_OBS, TOPIC_ROBOT_STATE
-from teleopit.controllers.observation import MjlabObservationBuilder
+from teleopit.controllers.observation import MjlabObservationBuilder, align_motion_qpos_yaw
 from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Recorder, Retargeter, Robot
 from teleopit.retargeting.core import extract_mimic_obs
@@ -428,6 +428,11 @@ class SimulationLoop:
                 # was trained with env_origins alignment (small anchor offsets).
                 robot_xy = np.asarray(state.base_pos[:2], dtype=np.float64)
                 qpos[0:2] = robot_xy
+
+                # Align motion root yaw to robot's current yaw heading.
+                # Training applies yaw_quat(robot * inv(motion)) so the policy
+                # only sees small relative heading offsets.
+                align_motion_qpos_yaw(np.asarray(state.quat, dtype=np.float32), qpos)
 
                 obs = self._build_observation(
                     state=state,

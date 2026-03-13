@@ -205,6 +205,36 @@ def _quat_rotate_np(q: FloatVec, v: FloatVec) -> FloatVec:
     return result[..., 1:4]
 
 
+def _yaw_quat_np(q: FloatVec) -> FloatVec:
+    """Extract the yaw-only component of a wxyz quaternion.
+
+    Matches mjlab.utils.lab_api.math.yaw_quat exactly.
+    """
+    w, x, y, z = float(q[0]), float(q[1]), float(q[2]), float(q[3])
+    yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+    out = np.array([math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0)], dtype=np.float32)
+    out /= max(float(np.linalg.norm(out)), 1e-8)
+    return out
+
+
+def align_motion_qpos_yaw(
+    robot_quat_wxyz: FloatVec,
+    motion_qpos: np.ndarray,
+) -> np.ndarray:
+    """Align motion qpos root quaternion yaw to robot heading (in-place).
+
+    Training applies ``yaw_quat(robot_quat * inv(motion_quat))`` to rotate all
+    motion data so the policy only sees small relative heading offsets.  This
+    helper replicates that alignment for inference by modifying ``motion_qpos[3:7]``.
+    """
+    motion_quat = np.asarray(motion_qpos[3:7], dtype=np.float32)
+    robot_quat = np.asarray(robot_quat_wxyz, dtype=np.float32)
+    delta = _quat_mul_np(robot_quat, _quat_inv_np(motion_quat))
+    delta_yaw = _yaw_quat_np(delta)
+    motion_qpos[3:7] = _quat_mul_np(delta_yaw, motion_quat).astype(motion_qpos.dtype)
+    return motion_qpos
+
+
 def _quat_to_rot6d_np(q: FloatVec) -> FloatVec:
     """Convert wxyz quaternion to 6D rotation matching PyTorch matrix[:, :2].reshape(-1).
 
