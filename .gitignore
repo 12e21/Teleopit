@@ -61,7 +61,7 @@ venv.bak/
 .sisyphus/
 *.h5
 *.onnx
-data/
+/data/
 !scripts/data/
 !scripts/data/*.py
 !train_mimic/data/
