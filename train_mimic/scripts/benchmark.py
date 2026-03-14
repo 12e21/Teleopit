@@ -10,7 +10,7 @@ Usage:
     # Benchmark only (no video)
     python train_mimic/scripts/benchmark.py --task Tracking-Flat-G1-NoStateEst \
         --checkpoint logs/rsl_rl/g1_tracking/.../model_30000.pt \
-        --motion_file data/datasets/builds/twist2_full/val.npz \
+        --motion_file data/datasets/twist2_full/val.npz \
         --num_envs 1
 
     # Single video (one continuous clip)

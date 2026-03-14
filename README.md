@@ -90,12 +90,13 @@ python scripts/run_sim2real.py controller.policy_path=policy.onnx
 ```bash
 python train_mimic/scripts/train.py \
   --task Tracking-Flat-G1-NoStateEst \
-  --motion_file data/datasets/builds/twist2_full/train.npz
+  --motion_file data/datasets/twist2_full/train.npz
 ```
 
 ## Choose Your Path
 
-- **我想一键重建推荐训练数据集**：运行 `bash train_mimic/scripts/data/build_twist2_full.sh`
+- **我想一键重建推荐训练数据集**：运行 `python train_mimic/scripts/data/build_dataset.py --spec train_mimic/configs/datasets/twist2_full.yaml`
+- **我想先把 BVH / PKL / 现有 NPZ 批量转成标准 clips**：运行 `python train_mimic/scripts/data/ingest_motion.py --type <bvh|pkl|npz> --input <path> --output <dataset/clips/source>`
 - **我想看新数据系统说明**：看 [`docs/dataset.md`](docs/dataset.md)
 
 - **我想先把一个 BVH 跑起来**：看 [`docs/getting-started.md`](docs/getting-started.md)

@@ -1,0 +1,9 @@
+name: lafan1_v1
+target_fps: 30
+val_percent: 5
+hash_salt: ""
+sources:
+  - name: lafan1_v1
+    type: bvh
+    input: data/lafan1_bvh
+    bvh_format: lafan1

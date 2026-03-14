@@ -46,21 +46,20 @@ python train_mimic/scripts/data/build_dataset.py \
 python train_mimic/scripts/data/build_dataset.py \
     --spec train_mimic/configs/datasets/twist2_full.yaml \
     --jobs 4
-
-bash train_mimic/scripts/data/build_twist2_full.sh
 ```
 
 构建产物：
 
-- `data/datasets/builds/twist2_full/train.npz`
-- `data/datasets/builds/twist2_full/val.npz`
-- `data/datasets/builds/twist2_full/build_info.json`
+- `data/datasets/twist2_full/train.npz`
+- `data/datasets/twist2_full/val.npz`
+- `data/datasets/twist2_full/build_info.json`
+- `data/datasets/twist2_full/clips/<source>/<clip>.npz`
 
 若要单独检查某个 clip 的 FK 标签一致性：
 
 ```bash
 python train_mimic/scripts/data/check_motion_npz_fk.py \
-    --npz data/datasets/cache/twist2_full/npz_clips/<source>/<clip>.npz
+    --npz data/datasets/twist2_full/clips/<source>/<clip>.npz
 ```
 
 ## 训练
@@ -72,7 +71,7 @@ python train_mimic/scripts/train.py \
     --task Tracking-Flat-G1-NoStateEst \
     --num_envs 64 \
     --max_iterations 100 \
-    --motion_file data/datasets/builds/twist2_full/train.npz
+    --motion_file data/datasets/twist2_full/train.npz
 ```
 
 完整训练：
@@ -82,7 +81,7 @@ python train_mimic/scripts/train.py \
     --task Tracking-Flat-G1-NoStateEst \
     --num_envs 4096 \
     --max_iterations 30000 \
-    --motion_file data/datasets/builds/twist2_full/train.npz
+    --motion_file data/datasets/twist2_full/train.npz
 ```
 
 单机多卡：
@@ -93,7 +92,7 @@ python train_mimic/scripts/train.py \
     --gpu_ids 0 1 2 3 \
     --num_envs 1024 \
     --max_iterations 30000 \
-    --motion_file data/datasets/builds/twist2_full/train.npz
+    --motion_file data/datasets/twist2_full/train.npz
 ```
 
 说明：
@@ -119,7 +118,7 @@ python train_mimic/scripts/save_onnx.py \
 python train_mimic/scripts/play.py \
     --task Tracking-Flat-G1-NoStateEst \
     --checkpoint logs/rsl_rl/g1_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/builds/twist2_full/val.npz
+    --motion_file data/datasets/twist2_full/val.npz
 ```
 
 benchmark：
@@ -128,7 +127,7 @@ benchmark：
 python train_mimic/scripts/benchmark.py \
     --task Tracking-Flat-G1-NoStateEst \
     --checkpoint logs/rsl_rl/g1_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/builds/twist2_full/val.npz \
+    --motion_file data/datasets/twist2_full/val.npz \
     --num_envs 1
 ```
 
@@ -138,7 +137,7 @@ python train_mimic/scripts/benchmark.py \
 python train_mimic/scripts/benchmark.py \
     --task Tracking-Flat-G1-NoStateEst \
     --checkpoint logs/rsl_rl/g1_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/builds/twist2_full/val.npz \
+    --motion_file data/datasets/twist2_full/val.npz \
     --num_envs 1 \
     --video \
     --video_length 600

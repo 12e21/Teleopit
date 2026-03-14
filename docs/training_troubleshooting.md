@@ -4,7 +4,7 @@
 
 > 入口导航：训练流程看 [`docs/training.md`](training.md)，数据准备看 [`docs/dataset.md`](dataset.md)，项目总入口看 [`docs/getting-started.md`](getting-started.md)。
 
-> 说明：本文中的 `data/twist2_retarget_*` 路径主要是历史排障样本与旧数据目录名示例，不代表当前推荐的数据管理入口；当前推荐路径是 `train_mimic/scripts/data/build_dataset.py` 生成的 `data/datasets/builds/<dataset>/{train,val}.npz`。
+> 说明：本文中的 `data/twist2_retarget_*` 路径主要是历史排障样本与旧数据目录名示例，不代表当前推荐的数据管理入口；当前推荐路径是 `train_mimic/scripts/data/build_dataset.py` 生成的 `data/datasets/<dataset>/{train,val}.npz`。
 
 ---
 
@@ -37,7 +37,7 @@
 先检查当前 clip 是否与 FK 一致：
 
 ```bash
-python train_mimic/scripts/data/check_motion_npz_fk.py     --npz data/motion/npz_clips/<source>/<clip>.npz
+python train_mimic/scripts/data/check_motion_npz_fk.py     --npz data/datasets/<dataset>/clips/<source>/<clip>.npz
 ```
 
 建议判据：

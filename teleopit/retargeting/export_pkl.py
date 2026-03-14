@@ -9,18 +9,18 @@ from scipy.spatial.transform import Rotation as R
 
 from teleopit.inputs.bvh_provider import BVHInputProvider
 from teleopit.retargeting.core import RetargetingModule
+from teleopit.retargeting.gmr.params import ROBOT_XML_DICT
 
 
-def mocap_xml_path(project_root: Path) -> Path:
-    return (
-        project_root
-        / "teleopit"
-        / "retargeting"
-        / "gmr"
-        / "assets"
-        / "unitree_g1"
-        / "g1_mocap_29dof.xml"
-    )
+def mocap_xml_path(project_root: Path, robot_name: str = "unitree_g1") -> Path:
+    del project_root
+    try:
+        return Path(ROBOT_XML_DICT[robot_name]).resolve()
+    except KeyError as exc:
+        raise ValueError(
+            f"unsupported robot_name for BVH retarget export: {robot_name}. "
+            f"Supported robots: {sorted(ROBOT_XML_DICT)}"
+        ) from exc
 
 
 def convert_bvh_to_retarget_pkl(

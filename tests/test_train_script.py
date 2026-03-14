@@ -30,7 +30,7 @@ def _args(**overrides: object) -> argparse.Namespace:
         "seed": 42,
         "wandb_project": None,
         "experiment_name": None,
-        "motion_file": "data/datasets/builds/twist2_full/train.npz",
+        "motion_file": "data/datasets/twist2_full/train.npz",
         "resume": None,
         "device": None,
         "gpu_ids": None,

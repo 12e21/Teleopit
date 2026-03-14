@@ -67,15 +67,22 @@ Teleopit 使用 Hydra 组合配置，最常改的是：
 
 ### 4. 我想准备训练数据
 
-推荐从统一 ingestion 开始：
+推荐直接走统一 build：
+
+```bash
+python train_mimic/scripts/data/build_dataset.py \
+  --spec train_mimic/configs/datasets/twist2_full.yaml
+```
+
+如果只想先把原始数据批量转成标准 NPZ clips：
 
 ```bash
 python train_mimic/scripts/data/ingest_motion.py \
+  --type bvh \
   --input data/hc_mocap_bvh \
+  --output data/datasets/hc_mocap_v1/clips/hc_mocap_v1 \
   --source hc_mocap_v1 \
-  --bvh_format hc_mocap \
-  --manifest data/motion/manifests/v1.csv \
-  --npz_root .
+  --bvh_format hc_mocap
 ```
 
 继续阅读：[`docs/dataset.md`](dataset.md)
@@ -85,7 +92,7 @@ python train_mimic/scripts/data/ingest_motion.py \
 ```bash
 python train_mimic/scripts/train.py \
   --task Tracking-Flat-G1-NoStateEst \
-  --motion_file data/datasets/builds/twist2_full/train.npz
+  --motion_file data/datasets/twist2_full/train.npz
 ```
 
 继续阅读：[`docs/training.md`](training.md)
