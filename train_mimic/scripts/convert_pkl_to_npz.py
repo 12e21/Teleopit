@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import os
 import pickle
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -185,6 +186,32 @@ def merge_npz_dir(npz_dir: str, output_path: str) -> None:
     )
 
 
+def _convert_directory(
+    input_path: Path,
+    output_dir: Path,
+    *,
+    merge_output_path: Path | None = None,
+) -> None:
+    pkl_files = sorted(input_path.rglob("*.pkl"))
+    if not pkl_files:
+        raise ValueError(f"No PKL files found in {input_path}")
+
+    print(f"Found {len(pkl_files)} PKL files in {input_path}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    extractor = MotionFkExtractor()
+    for i, pkl_file in enumerate(pkl_files):
+        rel = pkl_file.relative_to(input_path)
+        npz_file = output_dir / rel.with_suffix(".npz")
+        npz_file.parent.mkdir(parents=True, exist_ok=True)
+        convert_pkl_to_npz(str(pkl_file), str(npz_file), extractor=extractor)
+        if (i + 1) % 100 == 0 or (i + 1) == len(pkl_files):
+            print(f"  [{i + 1}/{len(pkl_files)}] {rel}")
+    print(f"Done. Converted {len(pkl_files)} files to {output_dir}")
+
+    if merge_output_path is not None:
+        merge_npz_dir(str(output_dir), str(merge_output_path))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Convert PKL motion data to NPZ for mjlab.")
     parser.add_argument("--input", type=str, required=True, help="Input PKL file or directory")
@@ -210,34 +237,34 @@ def main() -> None:
         convert_pkl_to_npz(str(input_path), str(out))
         print("Done.")
     elif input_path.is_dir():
-        # Batch directory conversion
         pkl_files = sorted(input_path.rglob("*.pkl"))
-        if not pkl_files:
+        if pkl_files and output_path.suffix == ".npz":
+            if not args.merge:
+                raise ValueError(
+                    f"--output must be a directory when converting a PKL directory without --merge: {output_path}"
+                )
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix=f"{output_path.stem}_clips_",
+                dir=str(output_path.parent),
+            ) as tmp_dir:
+                _convert_directory(
+                    input_path,
+                    Path(tmp_dir),
+                    merge_output_path=output_path,
+                )
+        elif pkl_files:
+            merge_output = output_path / "merged.npz" if args.merge else None
+            _convert_directory(input_path, output_path, merge_output_path=merge_output)
+        elif args.merge:
+            merged_out = str(output_path) if output_path.suffix == ".npz" else str(output_path / "merged.npz")
+            merge_npz_dir(str(input_path), merged_out)
+        else:
             print(f"No PKL files found in {input_path}")
             return
-        print(f"Found {len(pkl_files)} PKL files in {input_path}")
-        output_path.mkdir(parents=True, exist_ok=True)
-        extractor = MotionFkExtractor()
-        for i, pkl_file in enumerate(pkl_files):
-            rel = pkl_file.relative_to(input_path)
-            npz_file = output_path / rel.with_suffix(".npz")
-            npz_file.parent.mkdir(parents=True, exist_ok=True)
-            convert_pkl_to_npz(str(pkl_file), str(npz_file), extractor=extractor)
-            if (i + 1) % 100 == 0 or (i + 1) == len(pkl_files):
-                print(f"  [{i + 1}/{len(pkl_files)}] {rel}")
-        print(f"Done. Converted {len(pkl_files)} files to {output_path}")
-
-        if args.merge:
-            merged_out = str(output_path / "merged.npz")
-            merge_npz_dir(str(output_path), merged_out)
     else:
         print(f"Error: {input_path} not found")
         raise SystemExit(1)
-
-    # Merge-only mode: input is already an NPZ directory
-    if args.merge and input_path.is_dir() and not list(input_path.rglob("*.pkl")):
-        merged_out = str(output_path) if output_path.suffix == ".npz" else str(output_path / "merged.npz")
-        merge_npz_dir(str(input_path), merged_out)
 
 
 if __name__ == "__main__":

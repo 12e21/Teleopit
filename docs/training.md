@@ -1,592 +1,189 @@
 # 训练指南
 
-本文档介绍如何使用 Teleopit 训练 G1 人形机器人的全身运动追踪策略（mjlab + rsl_rl PPO）。
+本文档只描述当前 `train_mimic` 的官方训练主线。
 
-> 入口导航：如果你还没完成数据准备，先看 [`docs/dataset.md`](dataset.md)；如果你只是第一次接触项目，建议先从 [`docs/getting-started.md`](getting-started.md) 开始。
+> 入口导航：数据准备看 [`docs/dataset.md`](dataset.md)，项目整体边界看 [`docs/architecture.md`](architecture.md)。
 
-## 环境搭建
+## 当前主线
 
-### 前置要求
+- 官方训练任务只有一个：`Tracking-Flat-G1-NoStateEst`
+- 该任务对应 **154D no-state-estimation** actor 观测，也是当前 sim2real 唯一支持的训练路径
+- 旧 task `Tracking-Flat-G1-v2-NoStateEst` 仅保留为兼容别名；`v0`、`v1`、state-estimation 任务不再是正式支持接口
+- adaptive sampling 相关实现仍保留在代码里作为内部参考，但不再通过公开 task 暴露
 
-- Python 3.10
-  - **注意**：`cyclonedds==0.10.2`（sim2real 依赖）在 Python 3.10 有预编译 wheel，3.11 需要手动编译 CycloneDDS C 库
-- NVIDIA GPU（CUDA 支持）
-
-### 依赖版本说明
-
-- **mjlab ≥ 1.2.0**：MuJoCo Warp 仿真 + manager-based 环境架构
-- **rsl_rl_lib 5.x**（当前验证版本：`5.0.1`）：PPO 训练框架，支持 separate actor/critic 网络
-
-### 安装步骤
-
-训练和推理共用同一个 conda 环境，通过 optional dependencies 按需安装：
+## 环境安装
 
 ```bash
-# 创建环境（推荐 Python 3.10，sim2real 兼容性最好）
 conda create -n teleopit python=3.10
 conda activate teleopit
 
 cd Teleopit
-
-# 仅推理（核心依赖：mujoco, onnxruntime, torch 等）
-pip install -e .
-
-# 推理 + 训练（额外安装 rsl_rl, mjlab, wandb 等）
 pip install -e '.[train]'
-
-# 推理 + 训练 + sim2real（全部安装）
-pip install -e '.[train,sim2real]'
 ```
 
-验证安装：
+快速校验：
 
 ```bash
-# 验证推理侧
-python -c "from teleopit.pipeline import TeleopPipeline; print('inference OK')"
-
-# 验证训练侧
 python -c "import train_mimic.tasks; print('training OK')"
 ```
 
-## 运动数据准备
+## 数据集准备
 
-### 推荐：YAML Spec 驱动的数据集构建
-
-使用 `build_dataset_v2.py` 从 YAML spec 构建训练数据集：
+当前唯一推荐的数据构建入口是 YAML spec 驱动的 dataset pipeline：
 
 ```bash
-# 构建完整数据集（从 YAML spec 驱动，自动 PKL→NPZ 转换 + 合并）
-python train_mimic/scripts/data/build_dataset_v2.py --spec train_mimic/configs/datasets/twist2_full.yaml
-
-# 强制重建（清除缓存）
-python train_mimic/scripts/data/build_dataset_v2.py --spec train_mimic/configs/datasets/twist2_full.yaml --force
-
-# 并行转换（4 线程）
-python train_mimic/scripts/data/build_dataset_v2.py --spec train_mimic/configs/datasets/twist2_full.yaml --jobs 4
+python train_mimic/scripts/data/build_dataset.py \
+    --spec train_mimic/configs/datasets/twist2_full.yaml
 ```
 
-YAML spec 格式示例（`train_mimic/configs/datasets/twist2_full.yaml`）：
+常用变体：
 
-```yaml
-name: twist2_full
-target_fps: 30
-val_percent: 5
-hash_salt: ""
-sources:
-  - name: OMOMO_g1_GMR
-    input: data/twist2_retarget_pkl/OMOMO_g1_GMR
-  - name: AMASS_g1_GMR8
-    input: data/twist2_retarget_pkl/AMASS_g1_GMR8
+```bash
+python train_mimic/scripts/data/build_dataset.py \
+    --spec train_mimic/configs/datasets/twist2_full.yaml \
+    --force
+
+python train_mimic/scripts/data/build_dataset.py \
+    --spec train_mimic/configs/datasets/twist2_full.yaml \
+    --jobs 4
+
+bash train_mimic/scripts/data/build_twist2_full.sh
 ```
 
-详细说明见 [数据系统文档](dataset.md)。
+构建产物：
 
-构建完成后，训练/评估分别使用：
 - `data/datasets/builds/twist2_full/train.npz`
 - `data/datasets/builds/twist2_full/val.npz`
+- `data/datasets/builds/twist2_full/build_info.json`
 
-> `ingest_motion.py` 默认行为：新 clip 自动追加 manifest；已存在 `clip_id` 直接报错。需要覆盖时显式加 `--allow_update`。
-
-### PKL → NPZ 转换
-
-训练使用 NPZ 格式的运动数据。mjlab 的 `MotionLoader` 要求**单个 NPZ 文件**，需要把多个片段合并。
-
-> 说明：下面示例中的 `data/twist2_retarget_pkl/` 与 `data/twist2_retarget_npz/` 是历史沿用的目录命名，表示“旧数据资产的存放位置”，**不代表当前训练或推理仍使用 TWIST2 观测/策略路径**。
+若要单独检查某个 clip 的 FK 标签一致性：
 
 ```bash
-# 转换单个文件
-python train_mimic/scripts/convert_pkl_to_npz.py \
-    --input data/twist2_retarget_pkl/OMOMO_g1_GMR/sub10_clothesstand_000.pkl \
-    --output data/twist2_retarget_npz/OMOMO_g1_GMR/sub10_clothesstand_000.npz
-
-# 批量转换 + 合并为单文件（推荐）
-python train_mimic/scripts/convert_pkl_to_npz.py \
-    --input data/twist2_retarget_pkl/OMOMO_g1_GMR \
-    --output data/twist2_retarget_npz/OMOMO_g1_GMR \
-    --merge
-# 产出: data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz
-
-# 已有 NPZ 目录，只做合并
-python train_mimic/scripts/convert_pkl_to_npz.py \
-    --input data/twist2_retarget_npz/OMOMO_g1_GMR \
-    --output data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
-    --merge
-
-# FK 一致性校验（推荐在大规模训练前做）
 python train_mimic/scripts/data/check_motion_npz_fk.py \
-    --npz data/twist2_retarget_npz/OMOMO_g1_GMR/sub10_clothesstand_000.npz
+    --npz data/datasets/cache/twist2_full/npz_clips/<source>/<clip>.npz
 ```
 
-> **注意**：`--merge` 沿时间轴拼接所有片段，训练时随机采样起始帧，片段间的不连续不影响训练效果。
->
-> **当前实现**：`convert_pkl_to_npz.py` 会使用 MuJoCo FK 从 `root_pos/root_rot/dof_pos` 重建 `body_pos_w/body_quat_w`，
-> 不再使用“所有 body 共享 root 朝向”的近似标签。
+## 训练
 
-### NPZ 数据格式
-
-每个 NPZ 文件包含：
-
-| 字段 | 形状 | 说明 |
-|------|------|------|
-| `fps` | scalar | 帧率 |
-| `joint_pos` | (T, 29) | 关节位置 |
-| `joint_vel` | (T, 29) | 关节速度（有限差分） |
-| `body_pos_w` | (T, nb, 3) | 世界坐标系 body 位置 |
-| `body_quat_w` | (T, nb, 4) | 世界坐标系 body 朝向（wxyz） |
-| `body_lin_vel_w` | (T, nb, 3) | 线速度 |
-| `body_ang_vel_w` | (T, nb, 3) | 角速度 |
-| `body_names` | (nb,) | body 名称列表 |
-
-### 示例数据目录
-
-历史数据常见于 `data/twist2_retarget_pkl/` 下（PKL 格式，需转换）。这里保留的是目录命名示例，不是对当前主路径的命名建议：
-
-| 目录 | 数量 | 说明 |
-|------|------|------|
-| `OMOMO_g1_GMR` | 5882 | OMOMO 数据集（默认） |
-| `AMASS_g1_GMR8` | 13218 | AMASS 数据集 |
-| `twist1_to_twist2` | 12788 | 历史转换数据集目录名 |
-| `v1_v2_v3_g1` | 73 | 真实动捕数据 |
-
-## 训练流程
-
-### 快速验证
+快速 smoke test：
 
 ```bash
-# 默认使用 tensorboard 日志（不需要 wandb）
-python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
-    --num_envs 64 --max_iterations 100 \
+python train_mimic/scripts/train.py \
+    --task Tracking-Flat-G1-NoStateEst \
+    --num_envs 64 \
+    --max_iterations 100 \
     --motion_file data/datasets/builds/twist2_full/train.npz
 ```
 
-真机部署所需的 154D policy 使用独立任务：
+完整训练：
 
 ```bash
-# 154D no-state-estimation 任务（用于 sim2real）
-python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0-NoStateEst \
-    --num_envs 64 --max_iterations 100 \
-    --motion_file data/datasets/builds/twist2_full/train.npz
-```
-
-### 完整训练
-
-```bash
-# Tensorboard 日志（默认）
-python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
-    --num_envs 4096 --max_iterations 30000 \
-    --motion_file data/datasets/builds/twist2_full/train.npz
-
-# 单机 4 卡训练（--num_envs 表示每卡环境数）
-python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
-    --gpu_ids 0 1 2 3 \
-    --num_envs 1024 --max_iterations 30000 \
-    --motion_file data/datasets/builds/twist2_full/train.npz
-
-# 启用 wandb 日志（需要 wandb 账号）
-python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
-    --num_envs 4096 --max_iterations 30000 \
-    --motion_file data/datasets/builds/twist2_full/train.npz \
-    --wandb_project teleopit
-```
-
-查看 Tensorboard：
-```bash
-tensorboard --logdir logs/rsl_rl/g1_tracking
-```
-
-参数说明：
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--task` | `Tracking-Flat-G1-v0` | 任务名 |
-| `--num_envs` | cfg 默认值 | 并行环境数；多卡时表示每卡环境数 |
-| `--max_iterations` | cfg 默认值 | 训练迭代数 |
-| `--motion_file` | `data/datasets/builds/twist2_full/train.npz` | NPZ 运动数据路径（必须是单文件） |
-| `--seed` | `42` | 随机种子 |
-| `--wandb_project` | 不设置 | 设置后启用 wandb，否则用 tensorboard |
-| `--experiment_name` | `g1_tracking` | 实验名（影响日志目录） |
-| `--resume` | 不设置 | 从指定 checkpoint 恢复训练 |
-| `--device` | `cuda:0` | 训练设备 |
-| `--gpu_ids` | 不设置 | 单机多卡启动辅助参数，例如 `--gpu_ids 0 1 2 3` |
-| `--master_port` | `29500` | 多卡时内部 torchrun 使用的端口 |
-
-任务选择说明：
-
-- `Tracking-Flat-G1-v0`：默认 sim2sim 训练任务，actor 输入为 160D。
-- `Tracking-Flat-G1-v0-NoStateEst`：真机部署使用的 154D 训练任务，actor 去掉 `motion_anchor_pos_b` 和 `base_lin_vel`。
-- `Tracking-Flat-G1-v1` / `Tracking-Flat-G1-v1-NoStateEst`：对应 general-motion 优化版本。
-- `Tracking-Flat-G1-v2` / `Tracking-Flat-G1-v2-NoStateEst`：与 `v0` 保持一致，只把 `sampling_mode` 固定为 `uniform`，用于避开 adaptive 对坏 clip 的放大。
-
-### 多卡训练说明
-
-- 当前训练入口支持 **单机多卡**，通过 `--gpu_ids` 自动使用 `torchrun` 拉起分布式 worker。
-- 多卡时 `--num_envs` 的语义是 **每张卡的环境数**；例如 `--gpu_ids 0 1 2 3 --num_envs 1024` 表示总环境数为 `4096`。
-- 若显式传入 `--device`，在多卡 worker 中它必须与该进程的 `LOCAL_RANK` 对应（如 rank 2 必须用 `cuda:2`）；更推荐直接省略 `--device`。
-- 若遇到 `Address already in use`，通过 `--master_port 29600` 之类的参数更换端口。
-
-```bash
-# 使用其他版本数据集（例如 v2）
-python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
-    --motion_file data/motion/builds/v2/merged_train.npz \
-    --num_envs 4096 --max_iterations 30000
-
-# 多卡训练其他版本数据集
-python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
-    --motion_file data/motion/builds/v2/merged_train.npz \
-    --gpu_ids 0 1 2 3 \
-    --num_envs 1024 --max_iterations 30000
-
-# 从 checkpoint 恢复
-python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 \
-    --resume logs/rsl_rl/g1_tracking/2026-.../model_10000.pt \
+python train_mimic/scripts/train.py \
+    --task Tracking-Flat-G1-NoStateEst \
+    --num_envs 4096 \
     --max_iterations 30000 \
     --motion_file data/datasets/builds/twist2_full/train.npz
 ```
 
-Checkpoint 保存在 `logs/rsl_rl/g1_tracking/{run_name}/` 目录下。
+单机多卡：
 
-### 导出 ONNX 模型
+```bash
+python train_mimic/scripts/train.py \
+    --task Tracking-Flat-G1-NoStateEst \
+    --gpu_ids 0 1 2 3 \
+    --num_envs 1024 \
+    --max_iterations 30000 \
+    --motion_file data/datasets/builds/twist2_full/train.npz
+```
 
-训练完成后，将 PyTorch checkpoint 导出为 ONNX 格式：
+说明：
+
+- `--num_envs` 在多卡模式下表示每张卡的环境数
+- 默认 logger 是 tensorboard；传 `--wandb_project <name>` 才会启用 wandb
+- `--motion_file` 必须指向单个 merged NPZ
+- 如果传入旧别名 `Tracking-Flat-G1-v2-NoStateEst`，脚本会给出弃用提示并自动映射到新 task
+
+## 导出与评估
+
+导出 ONNX：
 
 ```bash
 python train_mimic/scripts/save_onnx.py \
-    --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
+    --checkpoint logs/rsl_rl/g1_tracking/<run>/model_30000.pt \
     --output policy.onnx
 ```
 
-ONNX 模型参数：
-- 输入：`observations`
-- 输出：`actions`（29D）
-- 内嵌 empirical normalization（训练时的运行均值/方差）
-
-### 策略回放（Viewer）
-
-mjlab 提供两种 viewer：
-
-| Viewer | 命令 | 要求 |
-|--------|------|------|
-| **native**（默认）| 无额外参数 | 需要本地显示器（X11/Wayland） |
-| **viser** | `--viewer viser` | 无需显示器，浏览器访问 `localhost:8012` |
+播放 checkpoint：
 
 ```bash
-# Native window（需要显示器）
 python train_mimic/scripts/play.py \
-    --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
+    --task Tracking-Flat-G1-NoStateEst \
+    --checkpoint logs/rsl_rl/g1_tracking/<run>/model_30000.pt \
     --motion_file data/datasets/builds/twist2_full/val.npz
-
-# 浏览器 viewer（SSH 时推荐，加 --viewer viser 后访问 localhost:8012）
-python train_mimic/scripts/play.py \
-    --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
-    --motion_file data/datasets/builds/twist2_full/val.npz \
-    --viewer viser
-
-# 录制视频（保存到 checkpoint 目录的 videos/play/）
-python train_mimic/scripts/play.py \
-    --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
-    --motion_file data/datasets/builds/twist2_full/val.npz \
-    --video
 ```
 
-### 推理部署
-
-使用导出的 ONNX 模型进行遥操推理（MuJoCo 仿真）：
-
-```bash
-python scripts/run_sim.py controller.policy_path=policy.onnx
-```
-
-## 训练配置
-
-### 仿真参数
-
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| sim_dt | 0.005s | 物理仿真步长 |
-| decimation | 4 | 每 4 个仿真步执行一次策略 |
-| policy_dt | 0.02s (50Hz) | 策略执行频率 |
-| num_envs | 4096 | 推荐并行环境数 |
-
-### 网络架构
-
-- Separate Actor/Critic MLP（`RslRlModelCfg`）
-- Actor 网络：[512, 256, 128]，ELU 激活，默认任务输入 160D；`*-NoStateEst` 任务输入 154D；输出均为 29D
-- Critic 网络：[512, 256, 128]，ELU 激活，输入 286D → 输出 1D
-- Empirical normalization（rsl_rl 内置运行均值/方差归一化）
-- GaussianDistribution, init_std=1.0
-
-### 观测结构
-
-观测定义在 `train_mimic/tasks/tracking/tracking_env_cfg.py`（已从 mjlab 复制到本地）。
-
-**Policy 观测**（actor 输入，带噪声）：
-
-| 观测项 | 说明 |
-|--------|------|
-| `generated_commands` | MotionCommand 输出的命令向量 |
-| `motion_anchor_pos_b` | 运动目标位置（机器人坐标系，3D） |
-| `motion_anchor_ori_b` | 运动目标朝向（6D 旋转表示） |
-| `base_lin_vel` | 根节点线速度（3D） |
-| `base_ang_vel` | 根节点角速度（3D） |
-| `joint_pos_rel` | 关节位置（相对默认值，29D） |
-| `joint_vel_rel` | 关节速度（29D） |
-| `last_action` | 上一步动作（29D） |
-
-**Critic 观测**（value function 输入，无噪声，额外含）：
-
-| 观测项 | 说明 |
-|--------|------|
-| `body_pos` | 关键 body 位置（anchor 坐标系） |
-| `body_ori` | 关键 body 朝向（anchor 坐标系） |
-
-### 奖励函数
-
-奖励定义在 `train_mimic/tasks/tracking/tracking_env_cfg.py`，BeyondMimic 指数核模式：`R = exp(-error² / std²)`
-
-| 奖励 | 权重 | std | 说明 |
-|------|------|-----|------|
-| `motion_global_root_pos` | 0.5 | 0.3 | 根位置追踪 |
-| `motion_global_root_ori` | 0.5 | 0.4 | 根朝向追踪 |
-| `motion_body_pos` | 1.0 | 0.3 | 关键 body 位置追踪 |
-| `motion_body_ori` | 1.0 | 0.4 | 关键 body 朝向追踪 |
-| `motion_body_lin_vel` | 1.0 | 1.0 | 线速度追踪 |
-| `motion_body_ang_vel` | 1.0 | 3.14 | 角速度追踪 |
-| `action_rate_l2` | -0.1 | - | 动作平滑正则 |
-| `joint_limit` | -10.0 | - | 关节限位惩罚 |
-| `self_collisions` | -10.0 | - | 自碰撞惩罚 |
-
-### PPO 超参数
-
-| 参数 | 值 |
-|------|-----|
-| learning_rate | 1e-3 |
-| gamma | 0.99 |
-| lam | 0.95 |
-| entropy_coef | 0.005 |
-| clip_param | 0.2 |
-| num_epochs | 5 |
-| num_mini_batches | 4 |
-| desired_kl | 0.01 |
-| num_steps_per_env | 24 |
-| empirical_normalization | True |
-
-## 如何判断训练是否有效
-
-### 关键指标
-
-1. **Mean episode length**（最重要）：应该持续上升，表示机器人站得越来越久
-2. **Mean reward (total)**：早期可能下降（机器人活得越久，累积 tracking error 越多），后期应回升
-3. **Body position tracking error**：应逐渐下降
-
-### 典型训练曲线
-
-```
-迭代 0-100:     episode_length 上升，reward 可能下降（正常）
-迭代 100-5000:  episode_length 继续上升，reward 开始回升
-迭代 5000-30000: 两者趋于收敛
-```
-
-## 训练日志解读
-
-下面按 `train.py` 控制台日志字段分组说明“含义、经验正常值、趋势”。
-注意：不同数据集/动作难度会导致绝对值不同，优先看趋势。
-
-### 1) 训练吞吐与耗时
-
-| 字段 | 含义 | 正常值（经验） | 期望趋势 |
-|------|------|------------------|----------|
-| `Learning iteration` | 当前迭代/总迭代 | 单调递增 | 按计划推进到目标迭代 |
-| `Total steps` | 累积环境步数 | 单调递增 | 持续增长 |
-| `Steps per second` | 训练吞吐（env step/s） | 与机器相关；稳定比绝对值更重要 | 波动小、长期稳定 |
-| `Collection time` | 采样耗时 | 通常明显大于学习耗时 | 稳定 |
-| `Learning time` | 反向传播耗时 | 通常小于采样耗时 | 稳定 |
-| `Iteration time` | 单轮总耗时 | `Collection + Learning` 附近 | 稳定 |
-| `ETA` | 剩余训练时间估计 | 参考值 | 随迭代推进逐步下降 |
-
-### 2) PPO 优化信号
-
-| 字段 | 含义 | 正常值（经验） | 期望趋势 |
-|------|------|------------------|----------|
-| `Mean value loss` | value function 拟合误差 | 常见在 `0.1 ~ 5`，偶发抖动正常 | 中后期下降并趋稳 |
-| `Mean surrogate loss` | PPO 策略目标（带符号） | 小幅负值常见（如 `-0.03 ~ 0`） | 绝对值逐步减小、趋稳 |
-| `Mean entropy loss` | 熵正则项（日志名含 loss） | 通常为正且随 std 变化 | 前期较高，后期缓降 |
-| `Mean action std` | 动作分布标准差（探索强度） | 常见 `0.3 ~ 1.0` | 训练推进时缓慢下降 |
-
-异常信号：
-- `value loss` 长时间爆高（如持续 >10）且不回落，常见于学习率过高或奖励尺度异常。
-- `action std` 很快塌到极小值（接近 0），常见于过早收敛、探索不足。
-
-### 3) Episode 总体质量
-
-| 字段 | 含义 | 正常值（经验） | 期望趋势 |
-|------|------|------------------|----------|
-| `Mean reward` | 每回合总回报 | 可能为负（惩罚项存在） | 中后期上升或至少不持续恶化 |
-| `Mean episode length` | 平均存活步数 | 初期常很低（1~3） | 持续上升（最关键） |
-
-`Mean reward` 在早期可能下降，但如果 `Mean episode length` 稳步上升，通常仍是正向训练。
-
-### 4) `Episode_Reward/*` 子项
-
-判读规则：
-- `motion_*`（追踪奖励）为正，越高越好。
-- `action_rate_l2/joint_limit/self_collisions`（惩罚）为负，越接近 0 越好。
-
-建议关注组合趋势：
-- `motion_body_pos` 上升 + `Metrics/motion/error_body_pos` 下降，说明姿态跟踪在变好。
-- `self_collisions` 长期偏负且不改善，通常要查碰撞体或动作过激。
-
-### 5) `Metrics/motion/*` 误差项
-
-这些是“越小越好”的直接 tracking error（单位随字段而定，位置通常是米，旋转通常是弧度）。
-
-| 字段 | 含义 | 经验目标（中后期） | 期望趋势 |
-|------|------|---------------------|----------|
-| `error_anchor_pos` | 根位置误差 | 尽量 < `0.25`（终止阈值附近） | 下降 |
-| `error_anchor_rot` | 根朝向误差 | 常见目标 < `0.6` rad | 下降 |
-| `error_body_pos` | 关键 body 位置误差 | 常见目标 < `0.2` m | 下降 |
-| `error_body_rot` | 关键 body 朝向误差 | 常见目标 < `1.0` rad | 下降 |
-| `error_joint_pos` | 关节角误差 | 与动作集相关，重点看下降趋势 | 下降 |
-| `error_joint_vel` | 关节速度误差 | 与动作激烈程度强相关 | 下降 |
-| `error_*_lin_vel` | 线速度误差 | 动作快时会偏大 | 下降或稳定 |
-| `error_*_ang_vel` | 角速度误差 | 动作快时会偏大 | 下降或稳定 |
-
-采样相关：
-- `sampling_entropy`：采样分布熵，过低可能表示采样过于集中。
-- `sampling_top1_prob`：最高概率 bin 的占比，过高可能表示覆盖不足。
-- `sampling_top1_bin`：当前最常采样的 bin（用于观察采样偏置）。
-
-### 6) `Episode_Termination/*` 终止原因
-
-判读规则：
-- `time_out`：越高越好（说明更多回合是“活到时限”结束）。
-- 其他失败原因（`anchor_pos`, `anchor_ori`, `ee_body_pos`）：越低越好。
-
-注意：不同 logger 归一化方式下，这些值不一定严格是 `[0,1]` 概率（可能是每回合平均触发次数或加权统计），所以以相对变化趋势判断更稳妥。
-
-### 7) 对示例日志的快速解读
-
-对于你给的这条 `iteration 967` 示例：
-- `Mean episode length = 13.72`：已明显高于起步期，训练在推进。
-- `error_anchor_pos = 0.246`：接近 `0.25` 终止边界，根位置稳定性仍是主要瓶颈。
-- `Episode_Termination/ee_body_pos = 16.7083`：末端 body 位置误差触发较多，手脚关键点跟踪还不稳。
-- `action_rate_l2/joint_limit/self_collisions` 接近 0：正则惩罚总体可控，不是当前主矛盾。
-
-结论：优先继续压低 `anchor_pos` 与 `ee_body_pos` 相关误差，而不是先调正则项。
-
-## 评估
-
-使用 benchmark 脚本评估训练好的策略：
+benchmark：
 
 ```bash
 python train_mimic/scripts/benchmark.py \
-    --task Tracking-Flat-G1-v0 \
-    --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
+    --task Tracking-Flat-G1-NoStateEst \
+    --checkpoint logs/rsl_rl/g1_tracking/<run>/model_30000.pt \
+    --motion_file data/datasets/builds/twist2_full/val.npz \
+    --num_envs 1
+```
+
+录视频：
+
+```bash
+python train_mimic/scripts/benchmark.py \
+    --task Tracking-Flat-G1-NoStateEst \
+    --checkpoint logs/rsl_rl/g1_tracking/<run>/model_30000.pt \
     --motion_file data/datasets/builds/twist2_full/val.npz \
     --num_envs 1 \
-    --num_eval_steps 2000 \
-    --warmup_steps 100
+    --video \
+    --video_length 600
 ```
 
-可选：录制评估视频（用于直观观察动作质量）：
+## 训练侧边界
 
-```bash
-# 单段连续视频
-python train_mimic/scripts/benchmark.py \
-    --task Tracking-Flat-G1-v0 \
-    --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
-    --motion_file data/datasets/builds/twist2_full/val.npz \
-    --num_envs 1 --video --video_length 600
+当前 `train_mimic` 按 4 层组织：
 
-# 多段独立 clip（每个 clip 采样不同动作片段）
-python train_mimic/scripts/benchmark.py ... \
-    --video --num_clips 10 --video_length 250 \
-    --video_folder benchmark_results/videos
+```text
+scripts
+    -> app helpers
+    -> task registry / env builder / runner cfg
+    -> mjlab + rsl_rl
 
-# 分屏视频（左=参考动作视角，右=机器人视角）
-python train_mimic/scripts/benchmark.py ... \
-    --video --split --num_clips 10 --video_length 250
+scripts/data
+    -> dataset_builder
+    -> dataset_lib / motion_fk / convert_pkl_to_npz
 ```
 
-如果你在 conda 环境里录视频时遇到 EGL / PyOpenGL 初始化错误，推荐先补齐 conda 侧依赖：
+对应目录：
 
-```bash
-conda install -c conda-forge libopengl libglx libegl libglvnd pyopengl
+```text
+train_mimic/
+├── app.py                    # train/play/benchmark 共享应用层
+├── data/
+│   ├── dataset_builder.py    # YAML spec 数据集主线
+│   ├── dataset_lib.py        # NPZ merge / inspect / hash 等通用工具
+│   └── motion_fk.py          # FK consistency 检查
+├── scripts/
+│   ├── train.py
+│   ├── play.py
+│   ├── benchmark.py
+│   ├── save_onnx.py
+│   └── data/build_dataset.py
+└── tasks/tracking/config/
+    ├── registry.py           # 官方 task 注册
+    ├── env.py                # 官方 env builder
+    ├── rl.py                 # 官方 runner cfg
+    └── profiles.py           # 内部 profile / sampling 参考实现
 ```
 
-在当前项目环境中，补齐这组依赖后，`benchmark.py --video` 与 `play.py --video` 可以直接工作；通常不再需要额外手动设置 `MUJOCO_GL`、`PYOPENGL_PLATFORM` 或 EGL vendor 环境变量。
+## 迁移说明
 
-### 跟踪误差
-
-benchmark 脚本会输出：
-- `total_error(anchor_pos+anchor_rot+body_pos)`：主对比指标（越小越好）
-- `error_anchor_pos`：根位置误差（越小越好）
-- `error_anchor_rot`：根朝向误差（越小越好）
-- `error_body_pos`：关键 body 位置误差（越小越好）
-- `error_anchor_lin_vel / error_body_rot / error_joint_pos / error_joint_vel` 等分布统计（`mean/std/p50/p95/min/max`）
-- `mean_step_reward`：每步平均奖励（越高越好）
-- `done_rate`, `timeout_rate`, `completed_episodes`, `mean_episode_length`（稳定性指标）
-
-结果保存到：
-- `benchmark_results/{task}-{checkpoint}.txt`（人类可读摘要）
-- `benchmark_results/{task}-{checkpoint}.json`（完整指标，便于后处理）
-
-## Troubleshooting
-
-常见问题请参考 [训练问题排查文档](training_troubleshooting.md)。
-
----
-
-## 训练代码结构
-
-任务通过 `register_mjlab_task(...)` 注册到 mjlab registry，训练/推理脚本通过 `--task` 查询配置。当前包含 `Tracking-Flat-G1-v0`、`Tracking-Flat-G1-v0-NoStateEst`、`Tracking-Flat-G1-v1`、`Tracking-Flat-G1-v1-NoStateEst`、`Tracking-Flat-G1-v2`、`Tracking-Flat-G1-v2-NoStateEst`。
-
-```
-train_mimic/tasks/tracking/
-├── tracking_env_cfg.py              # 基础 env 配置工厂（obs/reward/term/event/sim）
-├── mdp/
-│   ├── commands.py                  # MotionLoader + MotionCommand（动作加载/采样/播放）
-│   ├── observations.py              # anchor_pos_b, anchor_ori_b, body_pos_b, body_ori_b
-│   ├── rewards.py                   # 6个跟踪奖励 + self_collision
-│   ├── terminations.py              # anchor_pos/ori, ee_body_pos 终止条件
-│   └── metrics.py                   # MPKPE, EE误差等评估指标
-├── rl/
-│   └── runner.py                    # MotionTrackingOnPolicyRunner（自动ONNX导出）
-├── config/g1/
-│   ├── __init__.py                  # 注册 Tracking-Flat-G1-v0 / Tracking-Flat-G1-v0-NoStateEst
-│   ├── flat_env_cfg.py              # G1 机器人特化配置（关节/body/scale）
-│   └── rl_cfg.py                    # PPO + 网络结构配置
-├── config/g1_v1/
-    ├── __init__.py                  # 注册 Tracking-Flat-G1-v1 / Tracking-Flat-G1-v1-NoStateEst
-    ├── flat_env_cfg.py              # uniform sampling, 放宽 termination, 短 episode
-    └── rl_cfg.py                    # experiment_name=g1_tracking_v1
-└── config/g1_v2/
-    ├── __init__.py                  # 注册 Tracking-Flat-G1-v2 / Tracking-Flat-G1-v2-NoStateEst
-    ├── flat_env_cfg.py              # v0 settings + uniform sampling
-    └── rl_cfg.py                    # experiment_name=g1_tracking_v2
-```
-
-**v0 / v1 / v2 配置差异**：
-
-| 项 | v0 | v1 | v2 | 理由 |
-|---|---|---|---|---|
-| sampling_mode | adaptive | uniform | uniform | `v1` 为通用动作优化；`v2` 只关闭 adaptive |
-| anchor_pos threshold | 0.25 | 0.5 | 0.25 | `v2` 保持 `v0` 终止条件 |
-| anchor_ori threshold | 0.8 | 1.2 | 0.8 | `v2` 保持 `v0` 终止条件 |
-| ee_body_pos threshold | 0.25 | 0.5 | 0.25 | `v2` 保持 `v0` 终止条件 |
-| episode_length_s | 10.0 | 5.0 | 10.0 | `v2` 保持 `v0` 训练节奏 |
-
-> **注意**：tracking task 的 mdp 模块已从 mjlab 复制到本地 `train_mimic/tasks/tracking/mdp/`，可自由修改调试。基础设施类（`ManagerBasedRlEnvCfg`、`SceneCfg` 等）仍然来自 mjlab。
-
----
-
-## 与旧系统的对比
-
-| 特性 | 旧系统 (Isaac Lab) | 新系统 (mjlab) |
-|------|---------------------|----------------|
-| 仿真引擎 | PhysX / USD | MuJoCo Warp |
-| 环境 API | DirectRLEnv + 自定义 runner | ManagerBasedRlEnvCfg + 标准 rsl_rl |
-| 网络架构 | Conv1d motion encoder + MLP | 标准 MLP |
-| 观测维度 | 10098D (含 9120D motion history) | 160D |
-| 运动数据 | PKL (自定义 MotionLib) | NPZ (mjlab MotionCommand) |
-| Normalization | 自定义 Normalizer | rsl_rl empirical normalization |
-| ONNX 导出 | HardwareStudentFutureNN wrapper | 标准 MLP + 内嵌 normalization |
+- `build_dataset_v2.py` 已并入 `build_dataset.py`
+- manifest/review/export/migrate 那套 legacy 数据脚本已移除
+- `Tracking-Flat-G1-v2-NoStateEst` 仍可用，但只作为兼容别名
+- `Tracking-Flat-G1-v0*`、`Tracking-Flat-G1-v1*` 已退出正式支持面

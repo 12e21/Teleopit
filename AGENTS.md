@@ -243,8 +243,11 @@ Training code migrated from TWIST2, integrated as a separate package with one-wa
 ```
 train_mimic/               # Training package (pip install -e '.[train]')
 ├── __init__.py               # Version 0.1.0, TRAIN_MIMIC_ROOT_DIR
+├── app.py                    # Shared app helpers for train/play/benchmark
 ├── data/
-│   └── dataset_lib.py        # Dataset core logic (manifest parse / validate / merge / split)
+│   ├── dataset_builder.py    # YAML spec dataset pipeline
+│   ├── dataset_lib.py        # NPZ merge / inspect / hash utilities
+│   └── motion_fk.py          # FK consistency checks
 ├── scripts/                  # Training, export, evaluation, data prep
 │   ├── train.py              # mjlab + rsl_rl PPO training entry point
 │   ├── save_onnx.py          # ONNX export
@@ -252,16 +255,13 @@ train_mimic/               # Training package (pip install -e '.[train]')
 │   ├── benchmark.py          # Policy evaluation with tracking errors
 │   └── convert_pkl_to_npz.py # PKL → NPZ clip conversion and merge (body pose labels rebuilt via MuJoCo FK)
 ├── tasks/                    # Task registration + env/runner cfg
-│   └── tracking/config/      # g1(v0), g1_v1, g1_v2 task env/runner configs
+│   └── tracking/config/      # Single official tracking task + internal profiles
 ├── configs/
-│   └── twist2_dataset.yaml   # Legacy dataset manifest (not used by current train/play/benchmark main path)
+│   └── datasets/             # YAML dataset specs
 ├── assets/g1/                # G1 assets
 └── scripts/data/             # Dataset system scripts
-    ├── build_dataset_v2.py       # Recommended one-shot dataset build from YAML spec
-    ├── build_twist2_full.sh      # Twist2 full wrapper around build_dataset_v2.py
-    ├── migrate_legacy_dataset.py # Legacy manifest migration from NPZ clips
-    ├── validate_dataset.py       # Legacy manifest/NPZ validation
-    ├── build_dataset.py          # Legacy merged_train/merged_val build from manifest
+    ├── build_dataset.py          # Official one-shot dataset build from YAML spec
+    ├── build_twist2_full.sh      # Wrapper around build_dataset.py
     └── check_motion_npz_fk.py    # Validate NPZ body pose labels against MuJoCo FK
 ```
 
@@ -275,27 +275,25 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for known issues.
 Quick reference:
  Conda env: `teleopit` (Python 3.10)
  Ingest data: `python train_mimic/scripts/data/ingest_motion.py --input data/hc_mocap_bvh --source hc_mocap_v1 --bvh_format hc_mocap --manifest data/motion/manifests/v1.csv --npz_root .`
- Build dataset (recommended): `python train_mimic/scripts/data/build_dataset_v2.py --spec train_mimic/configs/datasets/twist2_full.yaml`
+ Build dataset (recommended): `python train_mimic/scripts/data/build_dataset.py --spec train_mimic/configs/datasets/twist2_full.yaml`
  Build dataset (wrapper): `bash train_mimic/scripts/data/build_twist2_full.sh`
- Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 --motion_file data/datasets/builds/twist2_full/train.npz --num_envs 4096 --max_iterations 30000`
- Train (uniform-only v0 variant): `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v2 --motion_file data/datasets/builds/twist2_full/train.npz --num_envs 4096 --max_iterations 30000`
- Sim2Real Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0-NoStateEst --motion_file data/datasets/builds/twist2_full/train.npz --num_envs 4096 --max_iterations 30000`
- Multi-GPU Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 --motion_file data/datasets/builds/twist2_full/train.npz --gpu_ids 0 1 2 3 --num_envs 1024 --max_iterations 30000` (`--num_envs` is per-GPU)
+ Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-NoStateEst --motion_file data/datasets/builds/twist2_full/train.npz --num_envs 4096 --max_iterations 30000`
+ Multi-GPU Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-NoStateEst --motion_file data/datasets/builds/twist2_full/train.npz --gpu_ids 0 1 2 3 --num_envs 1024 --max_iterations 30000` (`--num_envs` is per-GPU)
  Export: `python train_mimic/scripts/save_onnx.py --checkpoint <path> --output policy.onnx`
- Eval: `python train_mimic/scripts/benchmark.py --task Tracking-Flat-G1-v0 --checkpoint <path> --motion_file data/datasets/builds/twist2_full/val.npz --num_envs 1`
+ Eval: `python train_mimic/scripts/benchmark.py --task Tracking-Flat-G1-NoStateEst --checkpoint <path> --motion_file data/datasets/builds/twist2_full/val.npz --num_envs 1`
 
 ### Key Technical Details
 
  **Environment API**: mjlab `ManagerBasedRlEnv` + standard rsl_rl runner
  **Config system**: Python class-based env/runner cfg from task registry
- **Training tasks**: `Tracking-Flat-G1-v0`, `Tracking-Flat-G1-v0-NoStateEst`, `Tracking-Flat-G1-v1`, `Tracking-Flat-G1-v1-NoStateEst`, `Tracking-Flat-G1-v2`, `Tracking-Flat-G1-v2-NoStateEst`
+ **Training task surface**: official task is `Tracking-Flat-G1-NoStateEst`; deprecated alias `Tracking-Flat-G1-v2-NoStateEst` is accepted by CLI and mapped to the official task
  **Multi-GPU training**: supported on a single node via `train_mimic/scripts/train.py --gpu_ids ...`; script relaunches itself with distributed workers, and `--num_envs` means per-GPU environments
  **Checkpoint format**: `logs/rsl_rl/{experiment}/{run}/model_{iter}.pt`
  **Network**: Standard MLP actor/critic (`[512,256,128]`, ELU)
- **Dataset system**: recommended path is YAML spec -> cached NPZ clips -> `train.npz`/`val.npz`; legacy manifest CSV scripts remain for advanced migration/debug
+ **Dataset system**: YAML spec -> cached NPZ clips -> `train.npz`/`val.npz`; legacy manifest/review scripts are removed
  **Motion label consistency**: `convert_pkl_to_npz.py` must generate `body_pos_w/body_quat_w/body_ang_vel_w` from MuJoCo FK; use `train_mimic/scripts/data/check_motion_npz_fk.py` to validate clips before large training runs
  **One-way dependency**: train_mimic imports from teleopit, never the reverse
- **Motion file**: single NPZ required by `MotionLoader`; build script outputs `merged_train.npz` / `merged_val.npz`
+ **Motion file**: single NPZ required by `MotionLoader`; build script outputs `train.npz` / `val.npz`
  **Evaluation**: Use `benchmark.py` to compute 8 tracking errors on trained policies
  **Tracking errors**: joint_dof, joint_vel, root_translation, root_rotation, root_vel, root_ang_vel, keybody_pos, feet_slip
  **Wandb logging**: Episode metrics (rewards + errors) logged via `self.extras["episode"]` in `_reset_idx`

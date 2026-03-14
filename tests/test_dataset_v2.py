@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from train_mimic.data.dataset_v2 import (
+from train_mimic.data.dataset_builder import (
     DatasetClipRow,
     assign_splits,
     build_source_convert_command,
@@ -103,7 +103,7 @@ def test_build_source_convert_command_points_to_batch_converter(
     _write_spec(spec_path)
     spec = load_dataset_spec(spec_path)
     monkeypatch.setattr(
-        "train_mimic.data.dataset_v2.resolve_source_input_dir",
+        "train_mimic.data.dataset_builder.resolve_source_input_dir",
         lambda source: Path("/tmp/pkl_source"),
     )
     command = build_source_convert_command(spec.sources[0], Path("/tmp/out"))

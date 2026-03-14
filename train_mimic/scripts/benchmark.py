@@ -8,7 +8,7 @@ Can optionally render and save benchmark videos for qualitative inspection.
 
 Usage:
     # Benchmark only (no video)
-    python train_mimic/scripts/benchmark.py --task Tracking-Flat-G1-v0 \
+    python train_mimic/scripts/benchmark.py --task Tracking-Flat-G1-NoStateEst \
         --checkpoint logs/rsl_rl/g1_tracking/.../model_30000.pt \
         --motion_file data/datasets/builds/twist2_full/val.npz \
         --num_envs 1
@@ -25,12 +25,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 
-from train_mimic.scripts.train import _validate_motion_file
+from train_mimic.app import (
+    DEFAULT_TASK,
+    build_runner_cfg_dict,
+    import_training_stack,
+    load_task_components,
+    resolve_device,
+    validate_checkpoint_path,
+    validate_motion_file,
+)
 
 
 def _render_frame(unwrapped: object, split: bool = False, _cmd: object = None) -> np.ndarray:
@@ -132,7 +139,7 @@ def _stats(values: list[float]) -> dict[str, float]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark G1 tracking policy.")
-    parser.add_argument("--task", type=str, default="Tracking-Flat-G1-v0-NoStateEst")
+    parser.add_argument("--task", type=str, default=DEFAULT_TASK)
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--motion_file", type=str, required=True)
     parser.add_argument("--num_envs", type=int, default=1)
@@ -164,7 +171,7 @@ def main() -> int:
         raise ValueError("--num_eval_steps must be greater than --warmup_steps")
     if args.video and args.num_envs != 1:
         raise ValueError("--video currently requires --num_envs 1")
-    _validate_motion_file(args.motion_file)
+    validate_motion_file(args.motion_file)
 
     # Set render backend before importing modules that may initialize MuJoCo/GL.
     if args.video and "MUJOCO_GL" not in os.environ:
@@ -174,24 +181,33 @@ def main() -> int:
         os.environ["PYOPENGL_PLATFORM"] = "egl"
         print("[INFO] --video enabled, PYOPENGL_PLATFORM not set. Defaulting to PYOPENGL_PLATFORM=egl.")
 
-    import torch
+    (
+        torch,
+        ManagerBasedRlEnv,
+        RslRlVecEnvWrapper,
+        MjlabOnPolicyRunner,
+        _load_env_cfg,
+        _load_rl_cfg,
+        _load_runner_cls,
+        configure_torch_backends,
+    ) = import_training_stack()
 
-    import mjlab.tasks  # noqa: F401 -- populates mjlab built-in tasks
-    import train_mimic.tasks  # noqa: F401 -- registers our custom tasks
-    from mjlab.envs import ManagerBasedRlEnv
-    from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
-    from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
-    from mjlab.utils.torch import configure_torch_backends
-
-    if not os.path.exists(args.checkpoint):
-        print(f"Error: checkpoint not found: {args.checkpoint}")
+    try:
+        validate_checkpoint_path(args.checkpoint)
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}")
         return 1
 
     configure_torch_backends()
 
     # Load configs (play=True disables corruption, push_robot, etc.)
-    env_cfg = load_env_cfg(args.task, play=True)
-    agent_cfg = load_rl_cfg(args.task)
+    task_name, env_cfg, agent_cfg, runner_cls = load_task_components(
+        args.task,
+        play=True,
+        load_env_cfg=_load_env_cfg,
+        load_rl_cfg=_load_rl_cfg,
+        load_runner_cls=_load_runner_cls,
+    )
 
     # Configure for benchmark
     env_cfg.seed = args.seed
@@ -214,7 +230,7 @@ def main() -> int:
         env_cfg.terminations.pop("anchor_ori", None)
         env_cfg.terminations.pop("ee_body_pos", None)
 
-    device = args.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device, torch)
 
     # Create env
     render_mode = "rgb_array" if args.video else None
@@ -233,9 +249,8 @@ def main() -> int:
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
     log_dir = os.path.dirname(args.checkpoint)
-    agent_dict = asdict(agent_cfg)
-    agent_dict["logger"] = "tensorboard"  # Never init wandb for evaluation.
-    RunnerCls = load_runner_cls(args.task) or MjlabOnPolicyRunner
+    agent_dict = build_runner_cfg_dict(agent_cfg, force_tensorboard=True)
+    RunnerCls = runner_cls or MjlabOnPolicyRunner
     runner = RunnerCls(env, agent_dict, log_dir=log_dir, device=device)
     runner.load(args.checkpoint, map_location=device)
     policy = runner.get_inference_policy(device=device)

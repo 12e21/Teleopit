@@ -4,6 +4,7 @@ import pickle
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from train_mimic.data.motion_fk import (
     MotionFkExtractor,
@@ -14,6 +15,7 @@ from train_mimic.data.motion_fk import (
 )
 from train_mimic.scripts.convert_pkl_to_npz import (
     _MJLAB_G1_BODY_NAMES,
+    main as convert_main,
     convert_pkl_to_npz,
 )
 
@@ -102,3 +104,55 @@ def test_compute_npz_fk_consistency_detects_corrupted_body_orientation(tmp_path:
     stats = compute_npz_fk_consistency(bad_npz_path, sample_count=0)
     assert stats.quat_mean > 0.05
 
+
+def test_convert_directory_with_merge_supports_npz_output_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    input_dir = tmp_path / "clips"
+    input_dir.mkdir()
+    with (input_dir / "clip.pkl").open("wb") as f:
+        pickle.dump(_synthetic_motion_payload(), f)
+
+    output_file = tmp_path / "merged.npz"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "convert_pkl_to_npz.py",
+            "--input",
+            str(input_dir),
+            "--output",
+            str(output_file),
+            "--merge",
+        ],
+    )
+
+    convert_main()
+
+    assert output_file.is_file()
+    assert not output_file.is_dir()
+
+
+def test_convert_directory_without_merge_rejects_npz_output_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    input_dir = tmp_path / "clips"
+    input_dir.mkdir()
+    with (input_dir / "clip.pkl").open("wb") as f:
+        pickle.dump(_synthetic_motion_payload(), f)
+
+    output_file = tmp_path / "merged.npz"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "convert_pkl_to_npz.py",
+            "--input",
+            str(input_dir),
+            "--output",
+            str(output_file),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="--output must be a directory"):
+        convert_main()

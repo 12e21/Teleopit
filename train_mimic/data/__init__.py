@@ -1,2 +1,1 @@
-"""Training data-system core utilities."""
-
+"""Training data-system modules."""

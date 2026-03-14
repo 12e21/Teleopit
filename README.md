@@ -89,11 +89,9 @@ python scripts/run_sim2real.py controller.policy_path=policy.onnx
 
 ```bash
 python train_mimic/scripts/train.py \
-  --task Tracking-Flat-G1-v0 \
+  --task Tracking-Flat-G1-NoStateEst \
   --motion_file data/datasets/builds/twist2_full/train.npz
 ```
-
-如果数据集中存在很多极难或可疑 clip，可改用 `Tracking-Flat-G1-v2`；它与 `v0` 配置一致，只把 motion sampling 改为 `uniform`。
 
 ## Choose Your Path
 
@@ -104,7 +102,7 @@ python train_mimic/scripts/train.py \
 - **我想了解离线 / 在线推理、viewer、录制**：看 [`docs/inference.md`](docs/inference.md)
 - **我想接 Pico4 全身动捕**：看 README 里的 Pico4 运行入口，并确认本机已手动安装 `xrobotoolkit_sdk`
 - **我想理解 Hydra 配置该怎么改**：看 [`docs/configuration.md`](docs/configuration.md)
-- **我想做数据清洗、manifest、build**：看 [`docs/dataset.md`](docs/dataset.md)
+- **我想构建训练数据集**：看 [`docs/dataset.md`](docs/dataset.md)
 - **我想训练或导出 ONNX policy**：看 [`docs/training.md`](docs/training.md)
 - **我想检查 motion NPZ 标签是否和 FK 一致**：运行 `python train_mimic/scripts/data/check_motion_npz_fk.py --npz <clip.npz>`
 - **我想控制真机 G1**：看 [`docs/sim2real.md`](docs/sim2real.md)
@@ -116,8 +114,8 @@ python train_mimic/scripts/train.py \
 - [`docs/architecture.md`](docs/architecture.md)：系统边界、层次与运行时装配
 - [`docs/inference.md`](docs/inference.md)：离线 sim、online sim、录制、viewer、渲染
 - [`docs/configuration.md`](docs/configuration.md)：配置组合方式、关键字段、常见 override
-- [`docs/dataset.md`](docs/dataset.md)：manifest / validate / build 数据流程
-- [`docs/training.md`](docs/training.md)：训练、评估、导出 ONNX
+- [`docs/dataset.md`](docs/dataset.md)：YAML spec 数据集构建主线
+- [`docs/training.md`](docs/training.md)：官方训练、评估、导出 ONNX 主线
 - [`docs/sim2real.md`](docs/sim2real.md)：Unitree G1 实机部署与状态机
 - [`docs/training_troubleshooting.md`](docs/training_troubleshooting.md)：训练侧常见问题排查
 

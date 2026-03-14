@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import pytest
 
+from train_mimic.app import DEFAULT_TASK, validate_checkpoint_path, validate_motion_file
 from train_mimic.scripts import train
-from train_mimic.tasks.tracking.config.g1.rl_cfg import make_g1_tracking_ppo_runner_cfg
-from train_mimic.tasks.tracking.config.g1_v1.rl_cfg import make_g1_tracking_ppo_runner_cfg_v1
-from train_mimic.tasks.tracking.config.g1_v2.rl_cfg import make_g1_tracking_ppo_runner_cfg_v2
+from train_mimic.tasks.tracking.config.rl import make_tracking_ppo_runner_cfg
 
 
 class _CudaStub:
@@ -24,7 +24,7 @@ class _TorchStub:
 
 def _args(**overrides: object) -> argparse.Namespace:
     defaults = {
-        "task": "Tracking-Flat-G1-v0",
+        "task": DEFAULT_TASK,
         "num_envs": 1024,
         "max_iterations": 10,
         "seed": 42,
@@ -62,7 +62,7 @@ class TestTrainLauncherHelpers:
         argv = [
             "train.py",
             "--task",
-            "Tracking-Flat-G1-v0",
+            DEFAULT_TASK,
             "--gpu_ids",
             "0",
             "1",
@@ -76,7 +76,7 @@ class TestTrainLauncherHelpers:
         assert train._filtered_argv_for_worker(argv) == [
             "train.py",
             "--task",
-            "Tracking-Flat-G1-v0",
+            DEFAULT_TASK,
             "--num_envs",
             "1024",
         ]
@@ -131,6 +131,14 @@ class TestTrainLauncherHelpers:
 
 
 def test_tracking_runner_configs_disable_model_upload() -> None:
-    assert make_g1_tracking_ppo_runner_cfg().upload_model is False
-    assert make_g1_tracking_ppo_runner_cfg_v1().upload_model is False
-    assert make_g1_tracking_ppo_runner_cfg_v2().upload_model is False
+    assert make_tracking_ppo_runner_cfg().upload_model is False
+
+
+def test_validate_motion_file_rejects_directories(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="Motion file not found"):
+        validate_motion_file(str(tmp_path))
+
+
+def test_validate_checkpoint_path_rejects_directories(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="Checkpoint not found"):
+        validate_checkpoint_path(str(tmp_path))

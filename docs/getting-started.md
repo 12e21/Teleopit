@@ -84,7 +84,7 @@ python train_mimic/scripts/data/ingest_motion.py \
 
 ```bash
 python train_mimic/scripts/train.py \
-  --task Tracking-Flat-G1-v0 \
+  --task Tracking-Flat-G1-NoStateEst \
   --motion_file data/datasets/builds/twist2_full/train.npz
 ```
 

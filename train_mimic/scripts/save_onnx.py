@@ -13,10 +13,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 
 import torch
 import torch.nn as nn
+
+from train_mimic.app import validate_checkpoint_path
 
 
 class PolicyExportWrapper(nn.Module):
@@ -237,8 +238,10 @@ def main() -> int:
     parser.add_argument("--opset_version", type=int, default=18)
     args = parser.parse_args()
 
-    if not os.path.exists(args.checkpoint):
-        print(f"Error: checkpoint not found: {args.checkpoint}")
+    try:
+        validate_checkpoint_path(args.checkpoint)
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}")
         return 1
 
     export_policy_as_onnx(

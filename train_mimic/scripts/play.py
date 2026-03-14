@@ -28,19 +28,17 @@ from __future__ import annotations
 
 import argparse
 import os
-from dataclasses import asdict
 
-import torch
-
-import mjlab.tasks  # noqa: F401 -- populates mjlab built-in tasks
-import train_mimic.tasks  # noqa: F401 -- registers our custom tasks
-from mjlab.envs import ManagerBasedRlEnv
-from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
-from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
-from mjlab.utils.torch import configure_torch_backends
 from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
-from train_mimic.scripts.train import _validate_motion_file
-from train_mimic.tasks.tracking.config.g1.flat_env_cfg import DEFAULT_TASK
+from train_mimic.app import (
+    DEFAULT_TASK,
+    build_runner_cfg_dict,
+    import_training_stack,
+    load_task_components,
+    resolve_device,
+    validate_checkpoint_path,
+    validate_motion_file,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,22 +59,40 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    if not os.path.exists(args.checkpoint):
-        print(f"Error: checkpoint not found: {args.checkpoint}")
+    (
+        torch,
+        ManagerBasedRlEnv,
+        RslRlVecEnvWrapper,
+        MjlabOnPolicyRunner,
+        _load_env_cfg,
+        _load_rl_cfg,
+        _load_runner_cls,
+        configure_torch_backends,
+    ) = import_training_stack()
+
+    try:
+        validate_checkpoint_path(args.checkpoint)
+        validate_motion_file(args.motion_file)
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}")
         raise SystemExit(1)
-    _validate_motion_file(args.motion_file)
 
     configure_torch_backends()
 
     # Load configs (play=True disables corruption, push_robot, etc.)
-    env_cfg = load_env_cfg(args.task, play=True)
-    agent_cfg = load_rl_cfg(args.task)
+    task_name, env_cfg, agent_cfg, runner_cls = load_task_components(
+        args.task,
+        play=True,
+        load_env_cfg=_load_env_cfg,
+        load_rl_cfg=_load_rl_cfg,
+        load_runner_cls=_load_runner_cls,
+    )
 
     # Override for playback
     env_cfg.scene.num_envs = args.num_envs
     env_cfg.commands["motion"].motion_file = args.motion_file
 
-    device = args.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device, torch)
 
     # render_mode only needed for video recording
     render_mode = "rgb_array" if args.video else None
@@ -97,9 +113,8 @@ def main() -> None:
 
     # Load policy (force tensorboard to avoid wandb init during playback).
     log_dir = os.path.dirname(args.checkpoint)
-    agent_dict = asdict(agent_cfg)
-    agent_dict["logger"] = "tensorboard"
-    RunnerCls = load_runner_cls(args.task) or MjlabOnPolicyRunner
+    agent_dict = build_runner_cfg_dict(agent_cfg, force_tensorboard=True)
+    RunnerCls = runner_cls or MjlabOnPolicyRunner
     runner = RunnerCls(env, agent_dict, log_dir=log_dir, device=device)
     runner.load(args.checkpoint, map_location=device)
     policy = runner.get_inference_policy(device=device)

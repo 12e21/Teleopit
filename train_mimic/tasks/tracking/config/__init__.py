@@ -1,1 +1,1 @@
-"""Empty init for config subpackage."""
+"""Config package for the official tracking training task."""

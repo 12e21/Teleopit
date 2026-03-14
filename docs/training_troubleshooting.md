@@ -4,7 +4,7 @@
 
 > 入口导航：训练流程看 [`docs/training.md`](training.md)，数据准备看 [`docs/dataset.md`](dataset.md)，项目总入口看 [`docs/getting-started.md`](getting-started.md)。
 
-> 说明：本文中的 `data/twist2_retarget_*` 路径主要是历史排障样本与旧数据目录名示例，不代表当前推荐的数据管理入口；新的训练数据组织方式以 `data/motion/` 下的 manifest/build 产物为准。
+> 说明：本文中的 `data/twist2_retarget_*` 路径主要是历史排障样本与旧数据目录名示例，不代表当前推荐的数据管理入口；当前推荐路径是 `train_mimic/scripts/data/build_dataset.py` 生成的 `data/datasets/builds/<dataset>/{train,val}.npz`。
 
 ---
 
@@ -54,7 +54,7 @@ python train_mimic/scripts/convert_pkl_to_npz.py     --input data/twist2_retarge
 然后做一个短训练 smoke test：
 
 ```bash
-python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0     --num_envs 64 --max_iterations 100     --motion_file data/twist2_retarget_npz/<source>/merged.npz
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-NoStateEst     --num_envs 64 --max_iterations 100     --motion_file data/twist2_retarget_npz/<source>/merged.npz
 ```
 
 预期现象：
@@ -130,7 +130,7 @@ nefc overflow - please increase njmax to 264
 
 ### 解决方案
 
-在 `train_mimic/tasks/tracking/config/g1/flat_env_cfg.py` 中覆盖训练仿真参数：
+在 `train_mimic/tasks/tracking/config/env.py` 的官方 env builder 中覆盖训练仿真参数：
 
 ```python
 self.sim.njmax = 500
@@ -183,7 +183,7 @@ actual_video_length = min(video_length, num_eval_steps)
 
 ```bash
 python train_mimic/scripts/benchmark.py \
-    --task Tracking-Flat-G1-v0 \
+    --task Tracking-Flat-G1-NoStateEst \
     --checkpoint logs/rsl_rl/g1_tracking/{run_name}/model_30000.pt \
     --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
     --num_envs 1 \

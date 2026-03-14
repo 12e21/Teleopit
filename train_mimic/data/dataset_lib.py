@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Shared utilities for motion-dataset manifest/validate/build scripts."""
+"""Shared utilities for the active NPZ-based dataset pipeline."""
 
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
 from dataclasses import dataclass
@@ -12,18 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-
-REQUIRED_MANIFEST_COLUMNS = [
-    "clip_id",
-    "source",
-    "file_rel",
-    "num_frames",
-    "fps",
-    "split",
-    "weight",
-    "enabled",
-    "quality_tag",
-]
 
 REQUIRED_NPZ_KEYS = [
     "fps",
@@ -40,20 +27,6 @@ NUM_ACTIONS = 29
 
 
 @dataclass(frozen=True)
-class ManifestEntry:
-    clip_id: str
-    source: str
-    file_rel: str
-    num_frames: int
-    fps: int
-    split: str
-    weight: float
-    enabled: bool
-    quality_tag: str
-    line_no: int
-
-
-@dataclass(frozen=True)
 class NpzMeta:
     fps: int
     num_frames: int
@@ -62,101 +35,6 @@ class NpzMeta:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        while True:
-            block = f.read(1024 * 1024)
-            if not block:
-                break
-            h.update(block)
-    return h.hexdigest()
-
-
-def parse_enabled(raw: str, *, line_no: int) -> bool:
-    v = raw.strip().lower()
-    if v in {"1", "true", "yes", "y"}:
-        return True
-    if v in {"0", "false", "no", "n"}:
-        return False
-    raise ValueError(f"line {line_no}: enabled must be 0/1/true/false, got '{raw}'")
-
-
-def normalize_split(raw: str, *, line_no: int) -> str:
-    v = raw.strip().lower()
-    if v in {"", "train", "val"}:
-        return v
-    raise ValueError(f"line {line_no}: split must be '', 'train', or 'val', got '{raw}'")
-
-
-def load_manifest(manifest_path: Path) -> list[ManifestEntry]:
-    if not manifest_path.is_file():
-        raise FileNotFoundError(f"manifest not found: {manifest_path}")
-
-    with manifest_path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        if reader.fieldnames is None:
-            raise ValueError(f"manifest is empty: {manifest_path}")
-        missing_cols = [c for c in REQUIRED_MANIFEST_COLUMNS if c not in reader.fieldnames]
-        if missing_cols:
-            raise ValueError(f"manifest missing required columns: {missing_cols}")
-
-        entries: list[ManifestEntry] = []
-        for idx, row in enumerate(reader, start=2):
-            try:
-                clip_id = (row["clip_id"] or "").strip()
-                source = (row["source"] or "").strip()
-                file_rel = (row["file_rel"] or "").strip()
-                if not clip_id:
-                    raise ValueError(f"line {idx}: clip_id is empty")
-                if not source:
-                    raise ValueError(f"line {idx}: source is empty")
-                if not file_rel:
-                    raise ValueError(f"line {idx}: file_rel is empty")
-
-                num_frames = int((row["num_frames"] or "").strip())
-                if num_frames <= 0:
-                    raise ValueError(f"line {idx}: num_frames must be > 0")
-                fps = int((row["fps"] or "").strip())
-                if fps <= 0:
-                    raise ValueError(f"line {idx}: fps must be > 0")
-
-                split = normalize_split(row["split"] or "", line_no=idx)
-                weight = float((row["weight"] or "").strip())
-                if weight <= 0.0:
-                    raise ValueError(f"line {idx}: weight must be > 0")
-                enabled = parse_enabled(row["enabled"] or "", line_no=idx)
-                quality_tag = (row["quality_tag"] or "").strip()
-            except Exception as exc:
-                raise ValueError(str(exc)) from exc
-
-            entries.append(
-                ManifestEntry(
-                    clip_id=clip_id,
-                    source=source,
-                    file_rel=file_rel,
-                    num_frames=num_frames,
-                    fps=fps,
-                    split=split,
-                    weight=weight,
-                    enabled=enabled,
-                    quality_tag=quality_tag,
-                    line_no=idx,
-                )
-            )
-
-    if not entries:
-        raise ValueError(f"manifest has no rows: {manifest_path}")
-    return entries
-
-
-def resolve_npz_path(file_rel: str, npz_root: Path) -> Path:
-    p = Path(file_rel).expanduser()
-    if p.is_absolute():
-        return p
-    return (npz_root / p).resolve()
 
 
 def inspect_npz(path: Path) -> NpzMeta:
@@ -222,83 +100,6 @@ def inspect_npz(path: Path) -> NpzMeta:
         raise ValueError("body_quat_w contains near-zero norms")
 
     return NpzMeta(fps=fps, num_frames=t, num_bodies=nb)
-
-
-def validate_entries(entries: list[ManifestEntry], npz_root: Path) -> dict[str, Any]:
-    errors: list[str] = []
-    warnings: list[str] = []
-
-    clip_ids = set()
-    file_rels = set()
-    enabled_rows = [e for e in entries if e.enabled]
-    disabled_rows = [e for e in entries if not e.enabled]
-
-    for e in entries:
-        if e.clip_id in clip_ids:
-            errors.append(f"line {e.line_no}: duplicate clip_id '{e.clip_id}'")
-        clip_ids.add(e.clip_id)
-        if e.file_rel in file_rels:
-            errors.append(f"line {e.line_no}: duplicate file_rel '{e.file_rel}'")
-        file_rels.add(e.file_rel)
-
-    source_stats: dict[str, dict[str, int]] = {}
-    num_bodies_expected: int | None = None
-    fps_expected: int | None = None
-
-    for e in enabled_rows:
-        try:
-            path = resolve_npz_path(e.file_rel, npz_root)
-            meta = inspect_npz(path)
-        except Exception as exc:
-            errors.append(f"line {e.line_no} ({e.file_rel}): {exc}")
-            continue
-
-        if meta.num_frames != e.num_frames:
-            errors.append(
-                f"line {e.line_no} ({e.file_rel}): num_frames mismatch "
-                f"(manifest={e.num_frames}, actual={meta.num_frames})"
-            )
-        if meta.fps != e.fps:
-            errors.append(
-                f"line {e.line_no} ({e.file_rel}): fps mismatch "
-                f"(manifest={e.fps}, actual={meta.fps})"
-            )
-
-        if num_bodies_expected is None:
-            num_bodies_expected = meta.num_bodies
-        elif meta.num_bodies != num_bodies_expected:
-            errors.append(
-                f"line {e.line_no} ({e.file_rel}): num_bodies mismatch "
-                f"(expected={num_bodies_expected}, actual={meta.num_bodies})"
-            )
-
-        if fps_expected is None:
-            fps_expected = meta.fps
-        elif meta.fps != fps_expected:
-            warnings.append(
-                f"line {e.line_no} ({e.file_rel}): fps differs from first clip "
-                f"({meta.fps} vs {fps_expected})"
-            )
-
-        src = source_stats.setdefault(e.source, {"clips": 0, "frames": 0})
-        src["clips"] += 1
-        src["frames"] += meta.num_frames
-
-    if not enabled_rows:
-        errors.append("no enabled rows in manifest")
-
-    return {
-        "ok": len(errors) == 0,
-        "timestamp_utc": utc_now_iso(),
-        "rows_total": len(entries),
-        "rows_enabled": len(enabled_rows),
-        "rows_disabled": len(disabled_rows),
-        "errors": errors,
-        "warnings": warnings,
-        "source_stats": source_stats,
-        "expected_num_bodies": num_bodies_expected,
-        "expected_fps": fps_expected,
-    }
 
 
 def hash_split(clip_id: str, val_percent: int, salt: str = "") -> str:
