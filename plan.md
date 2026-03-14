@@ -74,7 +74,7 @@
   - 154D 观测顺序、维度和各切片长度与 mjlab deploy 定义一致。
 
 - 入口回归：
-  - `run_sim.py`、`run_online_sim.py`、`run_sim2real.py`、`render_sim.py` 在默认配置下均能加载 mjlab G1 模型并运行。
+  - `run_sim.py`、`run_sim2real.py`、`render_sim.py` 在默认配置下均能加载 mjlab G1 模型并运行；online/Pico4 路径通过 `--config-name` 切换。
   - sim2sim 首帧姿态为 `HOME_KEYFRAME`。
   - sim2real 初始化打印的默认姿态与 PD 为 mjlab 值。
 

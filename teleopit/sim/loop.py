@@ -3,43 +3,18 @@ from __future__ import annotations
 import multiprocessing as mp
 import time
 from typing import Protocol, cast, final
+
 import mujoco
 import numpy as np
 from numpy.typing import NDArray
 
-from teleopit.bus.topics import TOPIC_ACTION, TOPIC_MIMIC_OBS, TOPIC_ROBOT_STATE
-from teleopit.controllers.observation import MjlabObservationBuilder, align_motion_qpos_yaw
+from teleopit.controllers.observation import MjlabObservationBuilder
 from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Recorder, Retargeter, Robot
-from teleopit.retargeting.core import extract_mimic_obs
+from teleopit.sim.runtime_components import PolicyStepRunner, RunRecorder, RuntimePublisher, ViewerManager
 
 Float32Array = NDArray[np.float32]
 Float64Array = NDArray[np.float64]
-
-
-class _SupportsGetTarget(Protocol):
-    def get_target_dof_pos(self, raw_action: Float32Array) -> Float32Array: ...
-
-
-class _SupportsBuild(Protocol):
-    def build(self, state: object, mimic_obs: Float32Array, last_action: Float32Array) -> Float32Array: ...
-
-
-class _SupportsBuildObservation(Protocol):
-    def build_observation(
-        self,
-        state: object,
-        history: list[Float32Array],
-        action_mimic: Float32Array,
-    ) -> Float32Array: ...
-
-
-class _SupportsAddFrame(Protocol):
-    def add_frame(self, data: dict[str, object]) -> None: ...
-
-
-class _SupportsRecordStep(Protocol):
-    def record_step(self, data: dict[str, object]) -> None: ...
 
 
 class _SupportsGet(Protocol):
@@ -254,7 +229,6 @@ class SimulationLoop:
         bus: MessageBus,
         cfg: object,
         viewers: set[str] | None = None,
-        viewer: bool = False,
     ) -> None:
         self.robot: Robot = robot
         self.controller: Controller = controller
@@ -288,59 +262,28 @@ class SimulationLoop:
         transition_dur = float(self._try_get_cfg("transition_duration") or 0.0)
         self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
 
-        # Resolve viewer set (support legacy viewer=bool kwarg)
-        if viewers is not None:
-            self._viewers: set[str] = set(viewers)
-        elif viewer:
-            self._viewers = {"sim2sim"}
-        else:
-            self._viewers = set()
-
-        # All viewers run in subprocesses to avoid GLFW/GLX single-context limit.
-        # Each entry: (process, shared_array, alive_flag, shutdown_event)
-        self._sub_viewers: dict[str, tuple[mp.Process, mp.Array, mp.Value, mp.Event]] = {}
-
-        xml_path = getattr(self.robot, "xml_path", None)
-        model = getattr(self.robot, "model", None)
-
-        # Window layout: spread horizontally, 850px apart
-        # Order: BVH (left) | Retarget (middle) | Sim2Sim (right)
-        _win_positions = {"bvh": (50, 50), "retarget": (900, 50), "sim2sim": (1750, 50)}
-
-        if xml_path is not None and model is not None:
-            nq = model.nq
-            # --- sim2sim viewer (shows physics result, no foot Z fix) ---
-            if "sim2sim" in self._viewers:
-                wx, wy = _win_positions["sim2sim"]
-                proc, arr, alive, shutdown = _start_robot_viewer(
-                    xml_path, nq, foot_z_correction=False,
-                    title="Sim2Sim", win_x=wx, win_y=wy,
-                )
-                self._sub_viewers["sim2sim"] = (proc, arr, alive, shutdown)
-
-            # --- retarget viewer (shows kinematic target, with foot Z fix) ---
-            if "retarget" in self._viewers:
-                wx, wy = _win_positions["retarget"]
-                proc, arr, alive, shutdown = _start_robot_viewer(
-                    xml_path, nq, foot_z_correction=True,
-                    title="Retarget", win_x=wx, win_y=wy,
-                )
-                self._sub_viewers["retarget"] = (proc, arr, alive, shutdown)
-
-        # BVH viewer subprocess (created lazily in run() — needs bone topology)
-        self._bvh_pos_arr: mp.Array | None = None
-        self._bvh_n_bones: int = 0
-
-    def _any_viewer_active(self) -> bool:
-        """Return True if at least one viewer window is still open."""
-        for _, _, alive, _ in self._sub_viewers.values():
-            if alive.value:
-                return True
-        return False
-
-    def _has_any_viewer(self) -> bool:
-        """Return True if any viewer was requested."""
-        return bool(self._viewers)
+        self._viewers: set[str] = set(viewers or set())
+        self._step_runner = PolicyStepRunner(
+            robot=self.robot,
+            controller=cast(object, self.controller),
+            obs_builder=self.obs_builder,
+            policy_hz=self.policy_hz,
+            decimation=self.decimation,
+            num_actions=self._num_actions,
+            kps=self._kps,
+            kds=self._kds,
+            torque_limits=self._torque_limits,
+            default_dof_pos=self._default_dof_pos,
+            qpos_interpolator=self._qpos_interpolator,
+        )
+        self._publisher = RuntimePublisher(self.bus)
+        self._recorder_helper = RunRecorder()
+        self._viewer_manager = ViewerManager(
+            robot=self.robot,
+            viewers=self._viewers,
+            start_robot_viewer=_start_robot_viewer,
+            bvh_viewer_proc=_bvh_viewer_proc,
+        )
 
     def run(
         self,
@@ -349,41 +292,16 @@ class SimulationLoop:
         num_steps: int,
         recorder: Recorder | None = None,
     ) -> dict[str, float | int]:
-        # --- Lazily create BVH viewer subprocess (matplotlib 3D) ---
-        if "bvh" in self._viewers and "bvh" not in self._sub_viewers:
-            bone_names: list[str] | None = getattr(input_provider, "bone_names", None)
-            bone_parents: np.ndarray | None = getattr(input_provider, "bone_parents", None)
-            if bone_names is not None and bone_parents is not None and len(bone_names) > 0:
-                n_bones = len(bone_names)
-                pos_arr = mp.Array("d", n_bones * 3)
-                shutdown = mp.Event()
-                alive = mp.Value("i", 0)
-                bvh_wx, bvh_wy = 50, 50  # leftmost position
-                proc = mp.Process(
-                    target=_bvh_viewer_proc,
-                    args=(list(bone_parents.astype(int)), pos_arr, n_bones, shutdown, alive,
-                          bvh_wx, bvh_wy),
-                    daemon=True,
-                )
-                proc.start()
-                self._sub_viewers["bvh"] = (proc, pos_arr, alive, shutdown)
-                self._bvh_pos_arr = pos_arr
-                self._bvh_n_bones = n_bones
+        self._viewer_manager.ensure_bvh_viewer(cast(object, input_provider))
 
         steps_done = 0
-        has_viewers = self._has_any_viewer()
+        has_viewers = self._viewer_manager.has_viewers()
         needs_pacing = has_viewers or self._realtime
         policy_dt = 1.0 / self.policy_hz
         wall_start = time.monotonic() if needs_pacing else 0.0
         max_steps = num_steps if num_steps > 0 else 2**63
 
-        # Wait for subprocess viewers to signal alive (up to 10s)
-        if self._sub_viewers:
-            deadline = time.monotonic() + 10.0
-            while time.monotonic() < deadline:
-                if all(alive.value for _, _, alive, _ in self._sub_viewers.values()):
-                    break
-                time.sleep(0.1)
+        self._viewer_manager.wait_until_ready(timeout_s=10.0)
 
         # Frame-rate alignment: BVH fps may differ from policy Hz.
         input_fps: float = float(getattr(input_provider, "fps", self.policy_hz))
@@ -393,7 +311,7 @@ class SimulationLoop:
 
         try:
             for _ in range(max_steps):
-                if has_viewers and not self._any_viewer_active():
+                if has_viewers and not self._viewer_manager.any_active():
                     break
 
                 policy_time = steps_done * policy_dt
@@ -407,44 +325,14 @@ class SimulationLoop:
                     cached_retargeted = retargeter.retarget(cached_human_frame)
                     last_bvh_idx = bvh_idx
 
-                retargeted = cached_retargeted
-                qpos = self._retarget_to_qpos(retargeted)
-
                 state = self.robot.get_state()
-
-                # Start interpolation on first frame from robot's current pose
-                if self._last_retarget_qpos is None and self._qpos_interpolator.duration > 0:
-                    start_qpos = np.zeros(36, dtype=np.float64)
-                    start_qpos[0:3] = np.asarray(state.base_pos[:3], dtype=np.float64)
-                    start_qpos[3:7] = np.asarray(state.quat[:4], dtype=np.float64)
-                    start_qpos[7:36] = np.asarray(state.qpos[:29], dtype=np.float64)
-                    self._qpos_interpolator.start(start_qpos)
-                qpos = self._qpos_interpolator.apply(qpos)
-
-                mimic_obs = extract_mimic_obs(qpos=qpos, last_qpos=self._last_retarget_qpos, dt=1.0 / self.policy_hz)
-
-                # Snapshot retarget qpos BEFORE physics alignment for the
-                # retarget viewer.  The viewer should show the pure kinematic
-                # reference, not the physics-coupled version which jitters
-                # when the sim robot is unstable.
-                retarget_viewer_qpos = qpos.copy()
-
-                # Align motion root XY to robot's current XY position.
-                # The retargeter outputs BVH world coordinates, but the policy
-                # was trained with env_origins alignment (small anchor offsets).
-                robot_xy = np.asarray(state.base_pos[:2], dtype=np.float64)
-                qpos[0:2] = robot_xy
-
-                # Align motion root yaw to robot's current yaw heading.
-                # Training applies yaw_quat(robot * inv(motion)) so the policy
-                # only sees small relative heading offsets.
-                align_motion_qpos_yaw(np.asarray(state.quat, dtype=np.float32), qpos)
+                preparation = self._step_runner.prepare_motion_command(cached_retargeted, state)
 
                 obs = self._build_observation(
                     state=state,
-                    mimic_obs=mimic_obs,
-                    last_action=self._last_action,
-                    retarget_qpos=qpos,
+                    mimic_obs=preparation.mimic_obs,
+                    last_action=self._step_runner.last_action,
+                    retarget_qpos=preparation.qpos,
                 )
                 policy_obs = self._validate_observation_for_policy(obs)
                 action: Float32Array = np.asarray(self.controller.compute_action(policy_obs), dtype=np.float32).reshape(-1)
@@ -452,63 +340,13 @@ class SimulationLoop:
                     raise ValueError(f"Controller returned {action.shape[0]} actions, expected {self._num_actions}")
 
                 target_dof_pos = self._compute_target_dof_pos(action)
-
-                # Check if robot uses built-in PD (position target mode)
-                builtin_pd = getattr(self.robot, "_builtin_pd", False)
-
-                torque: Float32Array = np.zeros((self._num_actions,), dtype=np.float32)
-                if builtin_pd:
-                    # Built-in PD: pass position target directly to MuJoCo actuator.
-                    # MuJoCo computes force = kp*(ctrl - qpos) - kd*qvel internally,
-                    # which participates in implicit integration for stability.
-                    self.robot.set_action(target_dof_pos)
-                    for _ in range(self.decimation):
-                        self.robot.step()
-                else:
-                    # External PD: compute torque manually each substep.
-                    for _ in range(self.decimation):
-                        pd_state = self.robot.get_state()
-                        dof_pos = np.asarray(pd_state.qpos, dtype=np.float32)[: self._num_actions]
-                        dof_vel = np.asarray(pd_state.qvel, dtype=np.float32)[: self._num_actions]
-                        torque = np.asarray((target_dof_pos - dof_pos) * self._kps - dof_vel * self._kds, dtype=np.float32)
-                        torque = np.asarray(np.clip(torque, -self._torque_limits, self._torque_limits), dtype=np.float32)
-                        self.robot.set_action(torque)
-                        self.robot.step()
-
-                final_state = self.robot.get_state()
-                self._publish(mimic_obs, action, final_state)
-                self._record(recorder, final_state, mimic_obs, action, target_dof_pos, torque)
-
-                # --- Write sim2sim qpos (post-physics) to shared memory ---
-                sim2sim_entry = self._sub_viewers.get("sim2sim")
-                if sim2sim_entry is not None and sim2sim_entry[2].value:
-                    robot_data = getattr(self.robot, "data", None)
-                    if robot_data is not None:
-                        sim_qpos = np.asarray(robot_data.qpos, dtype=np.float64)
-                        arr = sim2sim_entry[1]
-                        with arr.get_lock():
-                            arr[:len(sim_qpos)] = sim_qpos.tolist()
-
-                # --- Write retarget qpos to shared memory ---
-                retarget_entry = self._sub_viewers.get("retarget")
-                if retarget_entry is not None and retarget_entry[2].value:
-                    arr = retarget_entry[1]
-                    with arr.get_lock():
-                        arr[:len(retarget_viewer_qpos)] = retarget_viewer_qpos.tolist()
-
-                # --- Write BVH positions to shared memory ---
+                torque, final_state = self._step_runner.apply_control(target_dof_pos)
+                self._publish(preparation.mimic_obs, action, final_state)
+                self._record(recorder, final_state, preparation.mimic_obs, action, target_dof_pos, torque)
+                self._viewer_manager.write_sim2sim(self.robot)
+                self._viewer_manager.write_retarget(preparation.retarget_viewer_qpos)
                 if new_bvh_frame and cached_human_frame is not None:
-                    bvh_entry = self._sub_viewers.get("bvh")
-                    if bvh_entry is not None and bvh_entry[2].value and self._bvh_pos_arr is not None:
-                        bone_names_attr: list[str] | None = getattr(input_provider, "bone_names", None)
-                        if bone_names_attr is not None:
-                            n = self._bvh_n_bones
-                            pos_flat = np.zeros(n * 3, dtype=np.float64)
-                            for i, bname in enumerate(bone_names_attr):
-                                if bname in cached_human_frame:
-                                    pos_flat[i * 3:(i + 1) * 3] = cached_human_frame[bname][0]
-                            with self._bvh_pos_arr.get_lock():
-                                self._bvh_pos_arr[:n * 3] = pos_flat.tolist()
+                    self._viewer_manager.write_bvh(cast(object, input_provider), cached_human_frame)
 
                 # Real-time pacing
                 if needs_pacing:
@@ -518,20 +356,12 @@ class SimulationLoop:
                     if sleep_time > 0:
                         time.sleep(sleep_time)
 
-                self._last_action = action
-                self._last_retarget_qpos = qpos.copy()
+                self._step_runner.finish_step(action, preparation.qpos)
                 steps_done += 1
         except KeyboardInterrupt:
             pass
         finally:
-            # Shutdown all subprocess viewers
-            for name, (proc, _, _, shutdown) in self._sub_viewers.items():
-                shutdown.set()
-            for name, (proc, _, _, _) in self._sub_viewers.items():
-                proc.join(timeout=3)
-                if proc.is_alive():
-                    proc.terminate()
-            self._sub_viewers.clear()
+            self._viewer_manager.shutdown()
 
         final_state = self.robot.get_state()
         return {
@@ -552,15 +382,7 @@ class SimulationLoop:
         return self.run(input_provider=input_provider, retargeter=retargeter, num_steps=num_steps, recorder=recorder)
 
     def _compute_target_dof_pos(self, action: Float32Array) -> Float32Array:
-        get_target = getattr(self.controller, "get_target_dof_pos", None)
-        if callable(get_target):
-            target = np.asarray(cast(_SupportsGetTarget, cast(object, self.controller)).get_target_dof_pos(action), dtype=np.float32).reshape(-1)
-        else:
-            target = action + self._default_dof_pos
-
-        if target.shape[0] != self._num_actions:
-            raise ValueError(f"Target dof pos has {target.shape[0]} entries, expected {self._num_actions}")
-        return target
+        return self._step_runner.compute_target_dof_pos(action)
 
     def _build_observation(
         self,
@@ -569,36 +391,10 @@ class SimulationLoop:
         last_action: Float32Array,
         retarget_qpos: Float64Array,
     ) -> Float32Array:
-        if isinstance(self.obs_builder, MjlabObservationBuilder):
-            if retarget_qpos.shape[0] < 7 + self._num_actions:
-                raise ValueError(
-                    f"Retargeted qpos too short for MjlabObservationBuilder: {retarget_qpos.shape[0]} "
-                    f"(need >= {7 + self._num_actions})"
-                )
-            motion_joint_pos = np.asarray(retarget_qpos[7:7 + self._num_actions], dtype=np.float32)
-            if self._last_retarget_qpos is None:
-                motion_joint_vel = np.zeros((self._num_actions,), dtype=np.float32)
-            else:
-                prev_joint_pos = np.asarray(self._last_retarget_qpos[7:7 + self._num_actions], dtype=np.float32)
-                motion_joint_vel = (motion_joint_pos - prev_joint_pos) * np.float32(self.policy_hz)
-            obs = self.obs_builder.build(
-                cast(object, state),
-                np.asarray(retarget_qpos[:7 + self._num_actions], dtype=np.float32),
-                motion_joint_vel,
-                last_action,
-            )
-        elif hasattr(self.obs_builder, "build_observation"):
-            obs = cast(_SupportsBuildObservation, self.obs_builder).build_observation(state, [last_action], mimic_obs)
-        elif hasattr(self.obs_builder, "build"):
-            obs = cast(_SupportsBuild, cast(object, self.obs_builder)).build(state, mimic_obs, last_action)
-        else:
-            raise TypeError("ObservationBuilder must provide build_observation() or build().")
-        return np.asarray(obs, dtype=np.float32)
+        return self._step_runner.build_observation(state, mimic_obs, last_action, retarget_qpos)
 
     def _publish(self, mimic_obs: Float32Array, action: Float32Array, robot_state: object) -> None:
-        self.bus.publish(TOPIC_MIMIC_OBS, mimic_obs)
-        self.bus.publish(TOPIC_ACTION, action)
-        self.bus.publish(TOPIC_ROBOT_STATE, robot_state)
+        self._publisher.publish(mimic_obs, action, robot_state)
 
     def _record(
         self,
@@ -609,42 +405,10 @@ class SimulationLoop:
         target_dof_pos: Float32Array,
         torque: Float32Array,
     ) -> None:
-        if recorder is None:
-            return
-        state_qpos = np.asarray(getattr(state, "qpos"), dtype=np.float32)
-        state_qvel = np.asarray(getattr(state, "qvel"), dtype=np.float32)
-        state_timestamp = np.asarray(float(getattr(state, "timestamp")), dtype=np.float64)
-
-        payload: dict[str, object] = {
-            "joint_pos": state_qpos,
-            "joint_vel": state_qvel,
-            "mimic_obs": mimic_obs.astype(np.float32, copy=False),
-            "action": action.astype(np.float32, copy=False),
-            "target_dof_pos": target_dof_pos.astype(np.float32, copy=False),
-            "torque": torque.astype(np.float32, copy=False),
-            "timestamp": state_timestamp,
-        }
-        add_frame = getattr(recorder, "add_frame", None)
-        if callable(add_frame):
-            cast(_SupportsAddFrame, cast(object, recorder)).add_frame(payload)
-            return
-        record_step = getattr(recorder, "record_step", None)
-        if callable(record_step):
-            cast(_SupportsRecordStep, cast(object, recorder)).record_step(payload)
-            return
-        raise TypeError("Recorder does not provide add_frame() or record_step()")
+        self._recorder_helper.record(recorder, state, mimic_obs, action, target_dof_pos, torque)
 
     def _retarget_to_qpos(self, retargeted: object) -> Float64Array:
-        if isinstance(retargeted, tuple) and len(retargeted) == 3:
-            base_pos = np.asarray(retargeted[0], dtype=np.float64).reshape(-1)
-            base_rot = np.asarray(retargeted[1], dtype=np.float64).reshape(-1)
-            joint_pos = np.asarray(retargeted[2], dtype=np.float64).reshape(-1)
-            qpos = np.concatenate((base_pos, base_rot, joint_pos))
-        else:
-            qpos = np.array(retargeted, dtype=np.float64).reshape(-1)
-        if qpos.shape[0] < 36:
-            raise ValueError(f"Retargeted qpos too short: {qpos.shape[0]} (need >= 36)")
-        return qpos
+        return self._step_runner._retarget_to_qpos(retargeted)
 
     def _get_cfg(self, *keys: str) -> object:
         for key in keys:
@@ -685,16 +449,7 @@ class SimulationLoop:
         return float(value)
 
     def _validate_observation_for_policy(self, obs: Float32Array) -> Float32Array:
-        expected_raw = getattr(self.controller, "_expected_obs_dim", None)
-        if not isinstance(expected_raw, int) or expected_raw <= 0:
-            return obs
-        if obs.shape[0] != expected_raw:
-            raise ValueError(
-                f"Observation dimension mismatch: obs_builder produced {obs.shape[0]}, "
-                f"but policy expects {expected_raw}. "
-                "Use a matching observation builder and ONNX policy; automatic pad/trim is disabled."
-            )
-        return obs
+        return self._step_runner.validate_observation_for_policy(obs)
 
     def _get_root_height(self, state: object) -> float:
         robot_data = getattr(self.robot, "data", None)

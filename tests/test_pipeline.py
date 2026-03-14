@@ -37,6 +37,7 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
 
     class DummyLoop:
         def __init__(self, *args: object, **kwargs: object) -> None:
+            captured["loop_args"] = args
             captured["loop_kwargs"] = kwargs
 
     policy_path = tmp_path / "policy.onnx"
@@ -69,6 +70,9 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
             },
             "policy_hz": 50,
             "pd_hz": 1000,
+            "transition_duration": 1.5,
+            "realtime": True,
+            "viewers": ["retarget", "sim2sim"],
         }
     )
 
@@ -82,8 +86,68 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
     TeleopPipeline(cfg)
 
     controller_cfg = captured["controller_cfg"]
+    loop_cfg = captured["loop_args"][4]
     assert list(controller_cfg.default_dof_pos) == robot_default_angles
     assert list(controller_cfg.action_scale) == robot_action_scale
+    assert loop_cfg["transition_duration"] == pytest.approx(1.5)
+    assert loop_cfg["realtime"] is True
+    assert captured["loop_kwargs"]["viewers"] == {"retarget", "sim2sim"}
+
+
+def test_pipeline_rejects_legacy_viewer_key(monkeypatch, tmp_path: Path) -> None:
+    class DummyRobot:
+        def __init__(self, cfg: object) -> None:
+            pass
+
+    class DummyController:
+        def __init__(self, cfg: object) -> None:
+            pass
+
+    class DummyObsBuilder:
+        def __init__(self, cfg: object) -> None:
+            pass
+
+    class DummyInputProvider:
+        human_format = "lafan1"
+
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+    class DummyRetargeter:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+    class DummyLoop:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+    policy_path = tmp_path / "policy.onnx"
+    policy_path.write_bytes(b"dummy")
+    bvh_path = tmp_path / "input.bvh"
+    bvh_path.write_text("HIERARCHY\n", encoding="utf-8")
+    xml_path = tmp_path / "robot.xml"
+    xml_path.write_text("<mujoco model='dummy'/>", encoding="utf-8")
+
+    cfg = OmegaConf.create(
+        {
+            "robot": {"num_actions": 3, "xml_path": str(xml_path), "default_angles": [0.0, 0.0, 0.0]},
+            "controller": {"policy_path": str(policy_path)},
+            "input": {"provider": "bvh", "bvh_file": str(bvh_path)},
+            "policy_hz": 50,
+            "pd_hz": 1000,
+            "viewer": True,
+        }
+    )
+
+    monkeypatch.setattr("teleopit.pipeline.MuJoCoRobot", DummyRobot)
+    monkeypatch.setattr("teleopit.pipeline.RLPolicyController", DummyController)
+    monkeypatch.setattr("teleopit.pipeline.MjlabObservationBuilder", DummyObsBuilder)
+    monkeypatch.setattr("teleopit.pipeline.BVHInputProvider", DummyInputProvider)
+    monkeypatch.setattr("teleopit.pipeline.RetargetingModule", DummyRetargeter)
+    monkeypatch.setattr("teleopit.pipeline.SimulationLoop", DummyLoop)
+
+    with pytest.raises(ValueError, match="Legacy config key 'viewer'"):
+        TeleopPipeline(cfg)
 
 
 # =====================================================================

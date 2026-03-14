@@ -5,13 +5,13 @@
 ## 主入口
 
 ```bash
-python scripts/data/build_dataset_v2.py   --spec train_mimic/configs/datasets/twist2_full.yaml
+python train_mimic/scripts/data/build_dataset_v2.py   --spec train_mimic/configs/datasets/twist2_full.yaml
 ```
 
 或直接使用 twist2_full 包装脚本：
 
 ```bash
-bash scripts/data/build_twist2_full.sh
+bash train_mimic/scripts/data/build_twist2_full.sh
 ```
 
 默认输出：
@@ -57,25 +57,25 @@ sources:
 完整重建：
 
 ```bash
-bash scripts/data/build_twist2_full.sh --force
+bash train_mimic/scripts/data/build_twist2_full.sh --force
 ```
 
 复用已有 cache，只重做 merge：
 
 ```bash
-bash scripts/data/build_twist2_full.sh
+bash train_mimic/scripts/data/build_twist2_full.sh
 ```
 
 加速 source 级转换：
 
 ```bash
-bash scripts/data/build_twist2_full.sh --jobs 2
+bash train_mimic/scripts/data/build_twist2_full.sh --jobs 2
 ```
 
 跳过 sampled FK 检查：
 
 ```bash
-bash scripts/data/build_twist2_full.sh --skip-fk-check
+bash train_mimic/scripts/data/build_twist2_full.sh --skip-fk-check
 ```
 
 ## 训练接入
@@ -98,7 +98,7 @@ python train_mimic/scripts/benchmark.py   --task Tracking-Flat-G1-v0   --checkpo
 如果需要手工检查单个 clip：
 
 ```bash
-python scripts/data/check_motion_npz_fk.py   --npz data/datasets/cache/twist2_full/npz_clips/<source>/<clip>.npz
+python train_mimic/scripts/data/check_motion_npz_fk.py   --npz data/datasets/cache/twist2_full/npz_clips/<source>/<clip>.npz
 ```
 
 ## 数据清洗（人工 Review）
@@ -126,7 +126,7 @@ data/datasets/builds/<dataset>_cleaned/
 从已有 `manifest_resolved.csv` 生成 `review_state.csv`：
 
 ```bash
-python scripts/data/init_review_manifest.py \
+python train_mimic/scripts/data/init_review_manifest.py \
   --dataset twist2_full \
   --manifest data/datasets/builds/twist2_full/manifest_resolved.csv
 ```
@@ -139,7 +139,7 @@ python scripts/data/init_review_manifest.py \
 启动浏览器端审阅工具（默认 http://localhost:8012）：
 
 ```bash
-python scripts/data/review_dataset.py --dataset twist2_full
+python train_mimic/scripts/data/review_dataset.py --dataset twist2_full
 ```
 
 常用选项：
@@ -162,7 +162,7 @@ GUI 功能：
 ### 步骤 3：导出保留清单
 
 ```bash
-python scripts/data/export_reviewed_manifest.py \
+python train_mimic/scripts/data/export_reviewed_manifest.py \
   --review data/datasets/review/twist2_full/review_state.csv
 ```
 
@@ -173,7 +173,7 @@ python scripts/data/export_reviewed_manifest.py \
 ### 步骤 4：重建清洗后数据集
 
 ```bash
-python scripts/data/build_dataset_from_review.py \
+python train_mimic/scripts/data/build_dataset_from_review.py \
   --filtered_manifest data/datasets/review/twist2_full/filtered_manifest.csv \
   --output_dir data/datasets/builds/twist2_full_cleaned \
   --target_fps 30
@@ -213,7 +213,7 @@ python train_mimic/scripts/train.py \
 ## Legacy
 
 以下脚本继续保留，用于高级/历史场景，但不再是推荐主路径：
-- `scripts/ingest_motion.py`
-- `scripts/data/validate_dataset.py`
-- `scripts/data/build_dataset.py`
-- `scripts/data/migrate_legacy_dataset.py`
+- `train_mimic/scripts/data/ingest_motion.py`
+- `train_mimic/scripts/data/validate_dataset.py`
+- `train_mimic/scripts/data/build_dataset.py`
+- `train_mimic/scripts/data/migrate_legacy_dataset.py`

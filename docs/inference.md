@@ -50,7 +50,7 @@ python scripts/run_sim.py controller.policy_path=policy.onnx +num_steps=5000 +re
 启动在线仿真：
 
 ```bash
-python scripts/run_online_sim.py controller.policy_path=policy.onnx
+python scripts/run_sim.py --config-name online controller.policy_path=policy.onnx
 ```
 
 发送测试数据：
@@ -63,13 +63,13 @@ python scripts/send_bvh_udp.py --bvh data/hc_mocap/wander.bvh --loop
 
 ```bash
 # 指定端口
-python scripts/run_online_sim.py controller.policy_path=policy.onnx input.udp_port=1119
+python scripts/run_sim.py --config-name online controller.policy_path=policy.onnx input.udp_port=1119
 
 # 无窗口模式
-python scripts/run_online_sim.py controller.policy_path=policy.onnx viewers=none
+python scripts/run_sim.py --config-name online controller.policy_path=policy.onnx viewers=none
 
 # 显式设定有限步数
-python scripts/run_online_sim.py controller.policy_path=policy.onnx num_steps=300
+python scripts/run_sim.py --config-name online controller.policy_path=policy.onnx num_steps=300
 ```
 
 ## Viewer 模式
@@ -86,6 +86,7 @@ python scripts/run_online_sim.py controller.policy_path=policy.onnx num_steps=30
 
 - 多 viewer 运行在独立子进程中，不共享 GLFW context。
 - `'viewers=[retarget,sim2sim]'` 这种 Hydra list override 需要 shell 引号。
+- 旧 `viewer=true/false` alias 已移除；统一使用 `viewers=...`。
 - 当所有活动 viewer 关闭时，仿真会自动结束。
 
 ## 录制
@@ -124,17 +125,11 @@ MUJOCO_GL=egl python scripts/render_sim.py --bvh data/lafan1/dance1_subject2.bvh
 MUJOCO_GL=egl python scripts/render_sim.py --bvh data/hc_mocap/wander.bvh --format hc_mocap --policy policy.onnx
 ```
 
-批量渲染：
-
-```bash
-bash scripts/render_all_lafan1.sh --policy policy.onnx --max_seconds 30
-```
-
 ## 当前行为约束
 
 - **只接受 mjlab ONNX（160D 或 154D）**：旧的 1402D / TWIST2 policy 会在运行时直接报错。当前默认是 154D（`has_state_estimation=false`）；若需要跑 160D policy，请只在 MuJoCo/sim2sim 路径显式传入 `robot.has_state_estimation=true`。sim2real 不支持 160D。
 - **观测不自动 pad/trim**：观测定义与 ONNX 输入维度不一致时会 fail fast（启动时即校验）。
-- **建议显式指定输入文件**：不要依赖 `teleopit/configs/input/bvh.yaml` 中的机器相关示例路径。
+- **离线输入文件必须显式指定**：不要依赖 `teleopit/configs/input/bvh.yaml`；请总是传 `input.bvh_file=...`。
 
 ## 继续阅读
 

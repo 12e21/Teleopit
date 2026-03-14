@@ -26,6 +26,8 @@ from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.inputs.pico4_provider import Pico4InputProvider
 from teleopit.inputs.udp_bvh_provider import UDPBVHInputProvider
 from teleopit.retargeting.core import RetargetingModule
+from teleopit.runtime.common import cfg_get
+from teleopit.runtime.factory import build_sim2real_mocap_components
 from teleopit.sim2real.remote import UnitreeRemote
 from teleopit.sim2real.unitree_g1 import UnitreeG1Robot
 
@@ -33,15 +35,6 @@ logger = logging.getLogger(__name__)
 
 Float32Array = NDArray[np.float32]
 Float64Array = NDArray[np.float64]
-
-
-def _cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
-    if isinstance(cfg, dict):
-        return cfg.get(key, default)
-    if hasattr(cfg, "get"):
-        value = cfg.get(key)
-        return default if value is None else value
-    return getattr(cfg, key, default)
 
 
 class RobotMode(Enum):
@@ -63,149 +56,39 @@ class Sim2RealController:
         self.cfg = cfg
         self.mode = RobotMode.IDLE
 
-        self.policy_hz: float = float(_cfg_get(cfg, "policy_hz", 50.0))
+        self.policy_hz: float = float(cfg_get(cfg, "policy_hz", 50.0))
         self._project_root = Path(__file__).resolve().parent.parent.parent
 
         # Motion command transition smoothing
-        transition_dur = float(_cfg_get(cfg, "transition_duration", 0.0) or 0.0)
+        transition_dur = float(cfg_get(cfg, "transition_duration", 0.0) or 0.0)
         self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
 
         # ---- Real robot (SDK) ----
-        real_cfg = _cfg_get(cfg, "real_robot")
+        real_cfg = cfg_get(cfg, "real_robot")
         self.robot = UnitreeG1Robot(real_cfg)
         self.remote = UnitreeRemote()
 
         # ---- Mocap pipeline (reuse existing components) ----
-        input_cfg = _cfg_get(cfg, "input")
-        controller_cfg = _cfg_get(cfg, "controller")
-        robot_cfg = _cfg_get(cfg, "robot")
-
-        # Build input provider based on config
-        provider_kind = str(_cfg_get(input_cfg, "provider", "udp_bvh")).lower()
-
-        if provider_kind == "pico4":
-            self.input_provider: Pico4InputProvider | UDPBVHInputProvider = Pico4InputProvider(
-                human_format=str(_cfg_get(input_cfg, "human_format", "xrobot")),
-                timeout=float(_cfg_get(input_cfg, "pico4_timeout", 60.0)),
-            )
-            human_format = str(_cfg_get(input_cfg, "human_format", "xrobot"))
-        else:
-            # Default: UDP BVH provider
-            ref_bvh = str(_cfg_get(input_cfg, "reference_bvh", ""))
-            if ref_bvh and not Path(ref_bvh).is_absolute():
-                ref_bvh = str((self._project_root / ref_bvh).resolve())
-
-            self.input_provider = UDPBVHInputProvider(
-                reference_bvh=ref_bvh,
-                host=str(_cfg_get(input_cfg, "udp_host", "")),
-                port=int(_cfg_get(input_cfg, "udp_port", 1118)),
-                human_format=str(_cfg_get(input_cfg, "bvh_format", "hc_mocap")),
-                timeout=float(_cfg_get(input_cfg, "udp_timeout", 30.0)),
-            )
-
-            # Use provider's human_format (may be auto-adjusted, e.g. hc_mocap_no_toe)
-            if hasattr(self.input_provider, "human_format"):
-                human_format = f"bvh_{self.input_provider.human_format}"
-            else:
-                human_format = _cfg_get(input_cfg, "human_format", None)
-                if not human_format or str(human_format) == "null":
-                    bvh_format = str(_cfg_get(input_cfg, "bvh_format", "hc_mocap"))
-                    human_format = f"bvh_{bvh_format}"
-
-        self.retargeter = RetargetingModule(
-            robot_name=str(_cfg_get(input_cfg, "robot_name", "unitree_g1")),
-            human_format=str(human_format),
-            actual_human_height=float(_cfg_get(input_cfg, "human_height", 1.75)),
+        robot_cfg = cfg_get(cfg, "robot")
+        mocap_components = build_sim2real_mocap_components(
+            cfg,
+            self._project_root,
+            controller_cls=RLPolicyController,
+            obs_builder_cls=MjlabObservationBuilder,
+            pico4_input_cls=Pico4InputProvider,
+            udp_bvh_input_cls=UDPBVHInputProvider,
+            retargeter_cls=RetargetingModule,
         )
-
-        # Ensure controller has default_dof_pos
-        if _cfg_get(controller_cfg, "default_dof_pos", None) is None:
-            default_angles = _cfg_get(robot_cfg, "default_angles", None)
-            if default_angles is not None:
-                if hasattr(controller_cfg, "__setattr__"):
-                    controller_cfg.default_dof_pos = list(default_angles)
-                elif isinstance(controller_cfg, dict):
-                    controller_cfg["default_dof_pos"] = list(default_angles)
-
-        # Propagate action_scale from robot config only when controller
-        # has no explicit value (null). Explicit overrides are preserved.
-        if _cfg_get(controller_cfg, "action_scale", None) is None:
-            robot_action_scale = _cfg_get(robot_cfg, "action_scale", None)
-            if robot_action_scale is not None:
-                try:
-                    scale_val = list(robot_action_scale)
-                except TypeError:
-                    scale_val = robot_action_scale
-                if hasattr(controller_cfg, "__setattr__"):
-                    controller_cfg.action_scale = scale_val
-                elif isinstance(controller_cfg, dict):
-                    controller_cfg["action_scale"] = scale_val
-
-        # Resolve policy path
-        policy_path = str(_cfg_get(controller_cfg, "policy_path", ""))
-        if policy_path and not Path(policy_path).is_absolute():
-            resolved = (self._project_root / policy_path).resolve()
-            if resolved.exists():
-                if hasattr(controller_cfg, "__setattr__"):
-                    controller_cfg.policy_path = str(resolved)
-                elif isinstance(controller_cfg, dict):
-                    controller_cfg["policy_path"] = str(resolved)
-
-        self.policy = RLPolicyController(controller_cfg)
-        policy_dim = getattr(self.policy, "_expected_obs_dim", None)
-
-        # ObservationBuilder -- mjlab-aligned path only.
-        obs_type = str(_cfg_get(robot_cfg, "obs_builder", "mjlab")).lower()
-        if obs_type != "mjlab":
-            raise ValueError(
-                f"Unsupported robot.obs_builder='{obs_type}'. "
-                "TWIST2 policy path is deprecated; use mjlab-aligned policy and set robot.obs_builder=mjlab."
-            )
-        xml_path = str(_cfg_get(robot_cfg, "xml_path", ""))
-        if xml_path and not Path(xml_path).is_absolute():
-            candidate = (self._project_root / xml_path).resolve()
-            if not candidate.exists():
-                raise FileNotFoundError(
-                    f"robot.xml_path resolved to {candidate} which does not exist. "
-                    "Set an absolute path in robot config."
-                )
-            xml_path = str(candidate)
-        # Real robot does not provide base_pos / base_lin_vel, so sim2real is 154D-only.
-        has_state_estimation = bool(_cfg_get(robot_cfg, "has_state_estimation", False))
-        if has_state_estimation:
-            raise ValueError(
-                "Sim2real requires robot.has_state_estimation=false. "
-                "The real robot does not provide base_pos/base_lin_vel, so only 154D "
-                "mjlab ONNX policies exported from *-NoStateEst tasks are supported."
-            )
-        if policy_dim is not None and policy_dim != 154:
-            raise ValueError(
-                f"Sim2real only supports 154D mjlab ONNX policies exported from "
-                f"*-NoStateEst tasks; got {policy_dim}D."
-            )
-        obs_cfg = {
-            "num_actions": int(_cfg_get(robot_cfg, "num_actions", 29)),
-            "default_dof_pos": list(_cfg_get(robot_cfg, "default_angles")),
-            "xml_path": xml_path,
-            "anchor_body_name": _cfg_get(robot_cfg, "anchor_body_name", "torso_link"),
-            "has_state_estimation": has_state_estimation,
-        }
-        self.obs_builder = MjlabObservationBuilder(obs_cfg)
-
-        # Startup dim validation: obs_builder must match policy input dim
-        builder_dim = self.obs_builder.total_obs_size
-        if policy_dim is not None and policy_dim != builder_dim:
-            raise ValueError(
-                f"Observation dimension mismatch at startup: obs_builder produces {builder_dim}D "
-                f"but policy expects {policy_dim}D. Check has_state_estimation={has_state_estimation} "
-                "and ensure the ONNX model matches."
-            )
+        self.input_provider = mocap_components.input_provider
+        self.retargeter = mocap_components.retargeter
+        self.policy = mocap_components.controller
+        self.obs_builder = mocap_components.obs_builder
 
         # Default standing pose (29-DOF)
         self.default_angles = np.asarray(
-            _cfg_get(robot_cfg, "default_angles"), dtype=np.float32
+            cfg_get(robot_cfg, "default_angles"), dtype=np.float32
         )
-        self.num_actions: int = int(_cfg_get(robot_cfg, "num_actions", 29))
+        self.num_actions: int = int(cfg_get(robot_cfg, "num_actions", 29))
 
         # ---- Standing mode reference qpos ----
         self._standing_qpos = np.zeros(36, dtype=np.float64)
@@ -217,9 +100,9 @@ class Sim2RealController:
         self._last_retarget_qpos: Float64Array | None = None
 
         # ---- Mocap switch safety ----
-        mocap_sw = _cfg_get(cfg, "mocap_switch", {})
-        self._check_frames: int = int(_cfg_get(mocap_sw, "check_frames", 10))
-        self._max_pos_value: float = float(_cfg_get(mocap_sw, "max_position_value", 5.0))
+        mocap_sw = cfg_get(cfg, "mocap_switch", {})
+        self._check_frames: int = int(cfg_get(mocap_sw, "check_frames", 10))
+        self._max_pos_value: float = float(cfg_get(mocap_sw, "max_position_value", 5.0))
 
         logger.info(
             "Sim2RealController ready | mode=IDLE | policy_hz=%.0f",

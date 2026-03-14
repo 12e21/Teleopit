@@ -2,6 +2,8 @@
 
 Teleopit 使用 Hydra 组合配置。大多数运行入口都会从一个顶层 YAML 开始，再通过命令行 override 修改局部字段。
 
+运行时装配统一放在 `teleopit/runtime/`。脚本、`TeleopPipeline` 和 sim2real 状态机都会复用同一套路径解析、默认值传播和维度校验逻辑。
+
 ## 顶层配置
 
 - `teleopit/configs/default.yaml`：离线 sim2sim
@@ -24,6 +26,7 @@ Teleopit 使用 Hydra 组合配置。大多数运行入口都会从一个顶层 
 - `viewers`：viewer 集合，支持 `bvh`、`retarget`、`sim2sim`、`all`、`none`
 - `realtime`：是否按 wall clock 限速
 - `num_steps`：运行步数；online 模式常用 `0` 表示无限循环
+- `transition_duration`：从当前姿态平滑过渡到 retarget 命令的时间（秒）
 
 ### `robot`
 
@@ -96,7 +99,7 @@ python scripts/run_sim.py controller.policy_path=policy.onnx 'viewers=[retarget,
 ### 改 UDP 端口
 
 ```bash
-python scripts/run_online_sim.py controller.policy_path=policy.onnx input.udp_port=1119
+python scripts/run_sim.py --config-name online controller.policy_path=policy.onnx input.udp_port=1119
 ```
 
 ### 改真机网络接口
@@ -112,6 +115,7 @@ Teleopit 当前配置与运行时逻辑遵循 fail-fast 原则：
 - policy 维度不对，直接报错
 - 观测定义不匹配，直接报错
 - 必需路径缺失，直接报错
+- 使用旧配置键 `viewer`，直接报错
 - 不会自动 pad/trim 观测，也不会用默认值“强行跑通”
 
 这意味着你在修改配置时，应优先追查“哪两个组件定义不一致”。
@@ -124,12 +128,21 @@ Teleopit 当前配置与运行时逻辑遵循 fail-fast 原则：
 - 再确认它不是旧的 1402D / TWIST2 ONNX
 - 再确认输入维度是 `160`
 
-### 为什么不建议依赖 `input/bvh.yaml` 的默认 `bvh_file`？
+### 为什么现在必须显式指定 `input.bvh_file`？
 
-因为它现在是示例性质的机器本地路径。最稳妥的做法始终是命令行显式指定：
+因为 `input/bvh.yaml` 已不再提供机器相关默认路径。最稳妥的做法始终是命令行显式指定：
 
 ```bash
 python scripts/run_sim.py controller.policy_path=policy.onnx input.bvh_file=...
+```
+
+### 为什么 `viewer=true` 不再工作？
+
+因为 legacy alias 已移除。请统一改成：
+
+```bash
+python scripts/run_sim.py controller.policy_path=policy.onnx viewers=sim2sim
+python scripts/run_sim.py controller.policy_path=policy.onnx viewers=none
 ```
 
 ## 继续阅读

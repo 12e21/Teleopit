@@ -30,14 +30,14 @@
 当前版本的 `convert_pkl_to_npz.py` 已修复上述问题：
 - `body_pos_w/body_quat_w/body_ang_vel_w` 由 MuJoCo FK 重建；
 - body 顺序与名称对齐 mjlab G1 robot；
-- 可用 `scripts/data/check_motion_npz_fk.py` 做一致性校验。
+- 可用 `train_mimic/scripts/data/check_motion_npz_fk.py` 做一致性校验。
 
 ### 快速排查
 
 先检查当前 clip 是否与 FK 一致：
 
 ```bash
-python scripts/data/check_motion_npz_fk.py     --npz data/motion/npz_clips/<source>/<clip>.npz
+python train_mimic/scripts/data/check_motion_npz_fk.py     --npz data/motion/npz_clips/<source>/<clip>.npz
 ```
 
 建议判据：

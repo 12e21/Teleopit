@@ -56,13 +56,13 @@ python -c "import train_mimic.tasks; print('training OK')"
 
 ```bash
 # 构建完整数据集（从 YAML spec 驱动，自动 PKL→NPZ 转换 + 合并）
-python scripts/data/build_dataset_v2.py --spec train_mimic/configs/datasets/twist2_full.yaml
+python train_mimic/scripts/data/build_dataset_v2.py --spec train_mimic/configs/datasets/twist2_full.yaml
 
 # 强制重建（清除缓存）
-python scripts/data/build_dataset_v2.py --spec train_mimic/configs/datasets/twist2_full.yaml --force
+python train_mimic/scripts/data/build_dataset_v2.py --spec train_mimic/configs/datasets/twist2_full.yaml --force
 
 # 并行转换（4 线程）
-python scripts/data/build_dataset_v2.py --spec train_mimic/configs/datasets/twist2_full.yaml --jobs 4
+python train_mimic/scripts/data/build_dataset_v2.py --spec train_mimic/configs/datasets/twist2_full.yaml --jobs 4
 ```
 
 YAML spec 格式示例（`train_mimic/configs/datasets/twist2_full.yaml`）：
@@ -113,7 +113,7 @@ python train_mimic/scripts/convert_pkl_to_npz.py \
     --merge
 
 # FK 一致性校验（推荐在大规模训练前做）
-python scripts/data/check_motion_npz_fk.py \
+python train_mimic/scripts/data/check_motion_npz_fk.py \
     --npz data/twist2_retarget_npz/OMOMO_g1_GMR/sub10_clothesstand_000.npz
 ```
 

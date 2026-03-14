@@ -44,7 +44,7 @@ python scripts/run_sim.py \
 
 ```bash
 # Terminal 1
-python scripts/run_online_sim.py controller.policy_path=policy.onnx
+python scripts/run_sim.py --config-name online controller.policy_path=policy.onnx
 
 # Terminal 2
 python scripts/send_bvh_udp.py --bvh data/hc_mocap/wander.bvh --loop
@@ -70,7 +70,7 @@ Teleopit 使用 Hydra 组合配置，最常改的是：
 推荐从统一 ingestion 开始：
 
 ```bash
-python scripts/ingest_motion.py \
+python train_mimic/scripts/data/ingest_motion.py \
   --input data/hc_mocap_bvh \
   --source hc_mocap_v1 \
   --bvh_format hc_mocap \

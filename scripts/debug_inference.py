@@ -7,13 +7,12 @@ Usage:
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import hydra
 import numpy as np
 from omegaconf import DictConfig
 
 from teleopit.pipeline import TeleopPipeline
+from teleopit.runtime.cli import validate_policy_path
 
 
 OBS_SLICES = {
@@ -51,15 +50,7 @@ def _print_joint_array(name: str, arr: np.ndarray) -> None:
 
 @hydra.main(version_base=None, config_path="../teleopit/configs", config_name="default")
 def main(cfg: DictConfig) -> None:
-    policy_path = str(cfg.controller.get("policy_path", "")).strip()
-    if not policy_path:
-        raise ValueError("controller.policy_path is required")
-    resolved = Path(policy_path).expanduser()
-    if not resolved.is_absolute():
-        resolved = (Path.cwd() / resolved).resolve()
-    if not resolved.exists():
-        raise FileNotFoundError(f"ONNX policy file not found: {resolved}")
-
+    validate_policy_path(cfg, "debug_inference.py")
     pipeline = TeleopPipeline(cfg)
 
     ctrl = pipeline.controller

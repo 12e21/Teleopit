@@ -21,7 +21,8 @@ Module-internal isolation: all modules run in-process, communicate via `InProces
 ```
 teleopit/                 # Core package
 ├── interfaces.py         # Protocol definitions: Robot, Controller, InputProvider, Retargeter, etc.
-├── pipeline.py           # TeleopPipeline — assembles and runs the full pipeline
+├── pipeline.py           # TeleopPipeline — thin sim runtime facade
+├── runtime/              # Shared runtime assembly: config/path resolution, factories, CLI helpers
 ├── bus/                  # InProcessBus message pub/sub
 ├── configs/              # Hydra YAML configs
 │   ├── default.yaml      # Offline sim top-level config: viewers, policy_hz, pd_hz
@@ -52,13 +53,12 @@ teleopit/                 # Core package
 └── recording/            # HDF5Recorder
 scripts/
 ├── run_sim.py            # Offline BVH sim2sim pipeline
-├── run_online_sim.py     # Online realtime UDP sim2sim (uses online.yaml)
+├── run_sim2real.py       # G1 sim2real control; supports Pico4 via --config-name pico4_sim2real
 ├── send_bvh_udp.py       # UDP BVH test sender (--bvh, --loop, --fps, --downsample)
 ├── render_sim.py         # Render single BVH → 3 videos (bvh skeleton, retarget, sim2sim), supports --format flag
-├── render_all_lafan1.sh  # Batch render all data/lafan1/*.bvh
 ├── compute_ik_offsets.py # Compute IK quaternion offsets for new BVH formats (see IK Offset Calibration)
-├── ingest_motion.py      # Unified ingestion: BVH/PKL/NPZ -> NPZ clips + manifest
-└── data/                 # Dataset system scripts: migrate / validate / build
+└── setup_pico4.sh        # Pico4 environment setup helper
+train_mimic/scripts/data/ # Dataset system scripts: ingest / validate / build / review
 tests/                    # 78 pytest tests
 data/                     # BVH motion data (gitignored)
 ├── lafan1/               # 77 BVH files, 30fps, 22 joints — working
@@ -96,7 +96,7 @@ python scripts/run_sim.py controller.policy_path=policy.onnx viewers=none
 - BVH viewer is created lazily in `run()` (needs `bone_names`/`bone_parents` from `InputProvider`)
 - Retarget viewer foot Z correction uses `left_ankle_roll_link` / `right_ankle_roll_link` body IDs
 - Simulation breaks when **all** active viewer windows are closed
-- Backward compatible: `+viewer=true` maps to `viewers=sim2sim`, `+viewer=false` maps to `viewers=none`
+- `viewers` is the only supported viewer config key; legacy `viewer` alias is removed
 - Hydra quoting: multi-viewer values with commas need shell quotes, e.g. `'viewers=[retarget,sim2sim]'`
 
 **default_dof_pos 传递（关键）**：RL policy 输出的 action 是相对于默认站姿的**偏移量**，目标关节角计算公式为：
@@ -113,7 +113,7 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 
 ```bash
 # Terminal 1: start online sim
-python scripts/run_online_sim.py controller.policy_path=policy.onnx viewers=sim2sim
+python scripts/run_sim.py --config-name online controller.policy_path=policy.onnx viewers=sim2sim
 
 # Terminal 2: send test data
 python scripts/send_bvh_udp.py --bvh data/hc_mocap/wander.bvh --loop
@@ -132,8 +132,8 @@ python scripts/send_bvh_udp.py --bvh data/hc_mocap/wander.bvh --loop
 支持通过 `xrobotoolkit_sdk` 接收 Pico4 实时全身动捕数据，入口脚本：
 
 ```bash
-python scripts/run_pico4_sim.py controller.policy_path=policy.onnx
-python scripts/run_pico4_sim2real.py controller.policy_path=policy.onnx
+python scripts/run_sim.py --config-name pico4_sim controller.policy_path=policy.onnx
+python scripts/run_sim2real.py --config-name pico4_sim2real controller.policy_path=policy.onnx
 ```
 
 **`Pico4InputProvider` 关键设计**：
@@ -227,8 +227,6 @@ MUJOCO_GL=egl python scripts/render_sim.py --bvh data/lafan1/dance1_subject2.bvh
 # Single BVH — hc_mocap format
 MUJOCO_GL=egl python scripts/render_sim.py --bvh data/motion_corrected_v2.bvh --format hc_mocap --policy policy.onnx
 
-# All lafan1 BVH files (skips already-rendered)
-bash scripts/render_all_lafan1.sh --policy policy.onnx --max_seconds 30
 ```
 
 ## Known Issues
@@ -258,13 +256,13 @@ train_mimic/               # Training package (pip install -e '.[train]')
 ├── configs/
 │   └── twist2_dataset.yaml   # Legacy dataset manifest (not used by current train/play/benchmark main path)
 ├── assets/g1/                # G1 assets
-scripts/data/                 # Dataset system scripts
-├── build_dataset_v2.py       # Recommended one-shot dataset build from YAML spec
-├── build_twist2_full.sh      # Twist2 full wrapper around build_dataset_v2.py
-├── migrate_legacy_dataset.py # Legacy manifest migration from NPZ clips
-├── validate_dataset.py       # Legacy manifest/NPZ validation
-├── build_dataset.py          # Legacy merged_train/merged_val build from manifest
-└── check_motion_npz_fk.py    # Validate NPZ body pose labels against MuJoCo FK
+└── scripts/data/             # Dataset system scripts
+    ├── build_dataset_v2.py       # Recommended one-shot dataset build from YAML spec
+    ├── build_twist2_full.sh      # Twist2 full wrapper around build_dataset_v2.py
+    ├── migrate_legacy_dataset.py # Legacy manifest migration from NPZ clips
+    ├── validate_dataset.py       # Legacy manifest/NPZ validation
+    ├── build_dataset.py          # Legacy merged_train/merged_val build from manifest
+    └── check_motion_npz_fk.py    # Validate NPZ body pose labels against MuJoCo FK
 ```
 
 ### Environment Setup & Training
@@ -276,8 +274,9 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for known issues.
 
 Quick reference:
  Conda env: `teleopit` (Python 3.10)
- Ingest data: `python scripts/ingest_motion.py --input data/hc_mocap_bvh --source hc_mocap_v1 --bvh_format hc_mocap --manifest data/motion/manifests/v1.csv --npz_root .`
- Build dataset: `python scripts/data/build_dataset.py --manifest data/motion/manifests/v1.csv --dataset_version v1 --npz_root .` (mixed fps use `--target_fps 30`)
+ Ingest data: `python train_mimic/scripts/data/ingest_motion.py --input data/hc_mocap_bvh --source hc_mocap_v1 --bvh_format hc_mocap --manifest data/motion/manifests/v1.csv --npz_root .`
+ Build dataset (recommended): `python train_mimic/scripts/data/build_dataset_v2.py --spec train_mimic/configs/datasets/twist2_full.yaml`
+ Build dataset (wrapper): `bash train_mimic/scripts/data/build_twist2_full.sh`
  Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0 --motion_file data/datasets/builds/twist2_full/train.npz --num_envs 4096 --max_iterations 30000`
  Train (uniform-only v0 variant): `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v2 --motion_file data/datasets/builds/twist2_full/train.npz --num_envs 4096 --max_iterations 30000`
  Sim2Real Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-v0-NoStateEst --motion_file data/datasets/builds/twist2_full/train.npz --num_envs 4096 --max_iterations 30000`
@@ -294,7 +293,7 @@ Quick reference:
  **Checkpoint format**: `logs/rsl_rl/{experiment}/{run}/model_{iter}.pt`
  **Network**: Standard MLP actor/critic (`[512,256,128]`, ELU)
  **Dataset system**: recommended path is YAML spec -> cached NPZ clips -> `train.npz`/`val.npz`; legacy manifest CSV scripts remain for advanced migration/debug
- **Motion label consistency**: `convert_pkl_to_npz.py` must generate `body_pos_w/body_quat_w/body_ang_vel_w` from MuJoCo FK; use `scripts/data/check_motion_npz_fk.py` to validate clips before large training runs
+ **Motion label consistency**: `convert_pkl_to_npz.py` must generate `body_pos_w/body_quat_w/body_ang_vel_w` from MuJoCo FK; use `train_mimic/scripts/data/check_motion_npz_fk.py` to validate clips before large training runs
  **One-way dependency**: train_mimic imports from teleopit, never the reverse
  **Motion file**: single NPZ required by `MotionLoader`; build script outputs `merged_train.npz` / `merged_val.npz`
  **Evaluation**: Use `benchmark.py` to compute 8 tracking errors on trained policies
