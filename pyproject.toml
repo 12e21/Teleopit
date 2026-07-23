@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "teleopit"
-version = "0.4.0"
+version = "0.4.0+pkgdatafix1.assetsroot1.jointguard1"
 description = "Teleoperation framework for humanoid robots with motion retargeting"
 authors = [
     {name = "Teleopit Team"}
@@ -59,6 +59,22 @@ recording = [
     "imageio[ffmpeg]",
 ]
 dexhand = []
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+teleopit = [
+    "configs/*.yaml",
+    "configs/controller/*.yaml",
+    "configs/input/*.yaml",
+    "configs/robot/*.yaml",
+    "retargeting/gmr/ik_configs/*.json",
+    "retargeting/gmr/utils/lafan_vendor/license.txt",
+]
+train_mimic = [
+    "configs/datasets/*.yaml",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -92,6 +92,135 @@ class PolicyStepRunner:
         self._fixed_reference_pivot_pos_w: Float32Array | None = None
         self._fixed_reference_xy_offset_w: Float32Array | None = None
         self._reference_alignment_target_xy_w: Float32Array | None = None
+        self._joint_limit_lower: Float32Array | None = None
+        self._joint_limit_upper: Float32Array | None = None
+        self._joint_limit_limited: NDArray[np.bool_] | None = None
+        self._joint_limit_joint_names: tuple[str, ...] | None = None
+        self._last_original_target: Float32Array | None = None
+        self._last_guarded_target: Float32Array | None = None
+        self._last_joint_limit_clip_mask: NDArray[np.bool_] | None = None
+        self._last_joint_limit_correction: Float32Array | None = None
+        self._last_joint_limit_max_correction = 0.0
+        self._initialize_model_joint_limits()
+
+    @property
+    def last_original_target(self) -> Float32Array | None:
+        return None if self._last_original_target is None else self._last_original_target.copy()
+
+    @property
+    def last_guarded_target(self) -> Float32Array | None:
+        return None if self._last_guarded_target is None else self._last_guarded_target.copy()
+
+    @property
+    def last_joint_limit_clip_mask(self) -> NDArray[np.bool_] | None:
+        if self._last_joint_limit_clip_mask is None:
+            return None
+        return self._last_joint_limit_clip_mask.copy()
+
+    @property
+    def last_joint_limit_correction(self) -> Float32Array | None:
+        if self._last_joint_limit_correction is None:
+            return None
+        return self._last_joint_limit_correction.copy()
+
+    @property
+    def last_joint_limit_max_correction(self) -> float:
+        return self._last_joint_limit_max_correction
+
+    @property
+    def joint_limit_joint_names(self) -> tuple[str, ...] | None:
+        return self._joint_limit_joint_names
+
+    def _initialize_model_joint_limits(self) -> None:
+        model = getattr(self.robot, "model", None)
+        if model is None or not hasattr(model, "actuator_trnid"):
+            return
+
+        required = ("nu", "njnt", "nq", "jnt_qposadr", "jnt_limited", "jnt_range")
+        missing = [name for name in required if not hasattr(model, name)]
+        if missing:
+            raise ValueError(
+                "MuJoCo model is missing joint-limit mapping fields: " + ", ".join(missing)
+            )
+
+        nu = int(model.nu)
+        njnt = int(model.njnt)
+        nq = int(model.nq)
+        if nu < self.num_actions:
+            raise ValueError(
+                f"MuJoCo model has {nu} actuators, expected at least {self.num_actions}"
+            )
+
+        actuator_trnid = np.asarray(model.actuator_trnid)
+        jnt_qposadr = np.asarray(model.jnt_qposadr).reshape(-1)
+        jnt_limited = np.asarray(model.jnt_limited).reshape(-1)
+        jnt_range = np.asarray(model.jnt_range)
+        if actuator_trnid.ndim != 2 or actuator_trnid.shape[0] < self.num_actions:
+            raise ValueError(
+                "MuJoCo actuator_trnid does not contain the required actuator mappings"
+            )
+        if jnt_qposadr.shape[0] < njnt or jnt_limited.shape[0] < njnt:
+            raise ValueError("MuJoCo joint metadata is incomplete")
+        if jnt_range.ndim != 2 or jnt_range.shape[0] < njnt or jnt_range.shape[1] < 2:
+            raise ValueError("MuJoCo jnt_range metadata is incomplete")
+
+        joint_ids: list[int] = []
+        qpos_addresses: list[int] = []
+        joint_names: list[str] = []
+        lower = np.zeros((self.num_actions,), dtype=np.float32)
+        upper = np.zeros((self.num_actions,), dtype=np.float32)
+        limited = np.zeros((self.num_actions,), dtype=np.bool_)
+
+        joint_accessor = getattr(model, "joint", None)
+        if not callable(joint_accessor):
+            raise ValueError("MuJoCo model does not provide joint names through model.joint()")
+
+        for actuator_index in range(self.num_actions):
+            joint_id = int(actuator_trnid[actuator_index, 0])
+            if joint_id < 0 or joint_id >= njnt:
+                raise ValueError(
+                    f"Actuator {actuator_index} has invalid joint id {joint_id}"
+                )
+            qpos_address = int(jnt_qposadr[joint_id])
+            if qpos_address < 0 or qpos_address >= nq:
+                raise ValueError(
+                    f"Actuator {actuator_index} joint {joint_id} has invalid qpos address "
+                    f"{qpos_address}"
+                )
+            if joint_id in joint_ids:
+                raise ValueError(f"Actuator {actuator_index} repeats joint id {joint_id}")
+            if qpos_address in qpos_addresses:
+                raise ValueError(
+                    f"Actuator {actuator_index} repeats qpos address {qpos_address}"
+                )
+
+            joint_name = str(getattr(joint_accessor(joint_id), "name", ""))
+            if not joint_name:
+                raise ValueError(f"Joint {joint_id} has no valid name")
+
+            is_limited = bool(jnt_limited[joint_id])
+            joint_lower = float(jnt_range[joint_id, 0])
+            joint_upper = float(jnt_range[joint_id, 1])
+            if is_limited and (
+                not np.isfinite(joint_lower)
+                or not np.isfinite(joint_upper)
+                or joint_lower > joint_upper
+            ):
+                raise ValueError(
+                    f"Joint '{joint_name}' has invalid range [{joint_lower}, {joint_upper}]"
+                )
+
+            joint_ids.append(joint_id)
+            qpos_addresses.append(qpos_address)
+            joint_names.append(joint_name)
+            limited[actuator_index] = is_limited
+            lower[actuator_index] = np.float32(joint_lower)
+            upper[actuator_index] = np.float32(joint_upper)
+
+        self._joint_limit_lower = lower.copy()
+        self._joint_limit_upper = upper.copy()
+        self._joint_limit_limited = limited.copy()
+        self._joint_limit_joint_names = tuple(joint_names)
 
     def reset(self) -> None:
         self.last_action = np.zeros((self.num_actions,), dtype=np.float32)
@@ -102,6 +231,11 @@ class PolicyStepRunner:
         self._fixed_reference_pivot_pos_w = None
         self._fixed_reference_xy_offset_w = None
         self._reference_alignment_target_xy_w = None
+        self._last_original_target = None
+        self._last_guarded_target = None
+        self._last_joint_limit_clip_mask = None
+        self._last_joint_limit_correction = None
+        self._last_joint_limit_max_correction = 0.0
         self._motion_joint_vel_smoother.reset()
         self._motion_anchor_lin_vel_smoother.reset()
         self._motion_anchor_ang_vel_smoother.reset()
@@ -223,7 +357,31 @@ class PolicyStepRunner:
 
         if target.shape[0] != self.num_actions:
             raise ValueError(f"Target dof pos has {target.shape[0]} entries, expected {self.num_actions}")
-        return target
+
+        original_target = target.copy()
+        guarded_target = original_target.copy()
+        if (
+            self._joint_limit_limited is not None
+            and self._joint_limit_lower is not None
+            and self._joint_limit_upper is not None
+        ):
+            limited = self._joint_limit_limited
+            guarded_target[limited] = np.clip(
+                guarded_target[limited],
+                self._joint_limit_lower[limited],
+                self._joint_limit_upper[limited],
+            )
+
+        correction = np.asarray(guarded_target - original_target, dtype=np.float32)
+        clip_mask = np.asarray(correction != 0.0, dtype=np.bool_)
+        self._last_original_target = original_target.copy()
+        self._last_guarded_target = guarded_target.copy()
+        self._last_joint_limit_clip_mask = clip_mask.copy()
+        self._last_joint_limit_correction = correction.copy()
+        self._last_joint_limit_max_correction = float(
+            np.max(np.abs(correction), initial=np.float32(0.0))
+        )
+        return guarded_target.copy()
 
     def _align_reference_window(
         self,

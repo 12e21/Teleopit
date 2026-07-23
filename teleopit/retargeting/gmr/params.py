@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from teleopit.runtime.assets import (
+    GMR_ASSETS_ROOT,
     UNITREE_G1_AVP_O6_XML,
     UNITREE_G1_DEX3_XML,
     UNITREE_G1_XML,
@@ -13,29 +14,33 @@ def _resolve_path(relative_path):
     return BASE_DIR / relative_path
 
 
+def _resolve_gmr_asset_path(relative_path):
+    return GMR_ASSETS_ROOT / relative_path
+
+
 IK_CONFIG_ROOT = _resolve_path("ik_configs")
-ASSET_ROOT = _resolve_path("assets")
+ASSET_ROOT = GMR_ASSETS_ROOT
 
 ROBOT_XML_DICT = {
     "unitree_g1": UNITREE_G1_XML,
     "unitree_g1_with_hands": UNITREE_G1_DEX3_XML,
     "unitree_g1_avp_o6": UNITREE_G1_AVP_O6_XML,
-    "unitree_h1": _resolve_path("assets/unitree_h1/h1.xml"),
-    "unitree_h1_2": _resolve_path("assets/unitree_h1_2/h1_2_handless.xml"),
-    "booster_t1": _resolve_path("assets/booster_t1/T1_serial.xml"),
-    "booster_t1_29dof": _resolve_path("assets/booster_t1_29dof/t1_mocap.xml"),
-    "stanford_toddy": _resolve_path("assets/stanford_toddy/toddy_mocap.xml"),
-    "fourier_n1": _resolve_path("assets/fourier_n1/n1_mocap.xml"),
-    "engineai_pm01": _resolve_path("assets/engineai_pm01/pm_v2.xml"),
-    "kuavo_s45": _resolve_path("assets/kuavo_s45/biped_s45_collision.xml"),
-    "hightorque_hi": _resolve_path("assets/hightorque_hi/hi_25dof.xml"),
-    "galaxea_r1pro": _resolve_path("assets/galaxea_r1pro/r1_pro.xml"),
-    "berkeley_humanoid_lite": _resolve_path("assets/berkeley_humanoid_lite/bhl_scene.xml"),
-    "booster_k1": _resolve_path("assets/booster_k1/K1_serial.xml"),
-    "pnd_adam_lite": _resolve_path("assets/pnd_adam_lite/scene.xml"),
-    "tienkung": _resolve_path("assets/tienkung/mjcf/tienkung.xml"),
-    "pal_talos": _resolve_path("assets/pal_talos/talos.xml"),
-    "fourier_gr3": _resolve_path("assets/fourier_gr3v2_1_1/mjcf/gr3v2_1_1_dummy_hand.xml"),
+    "unitree_h1": _resolve_gmr_asset_path("unitree_h1/h1.xml"),
+    "unitree_h1_2": _resolve_gmr_asset_path("unitree_h1_2/h1_2_handless.xml"),
+    "booster_t1": _resolve_gmr_asset_path("booster_t1/T1_serial.xml"),
+    "booster_t1_29dof": _resolve_gmr_asset_path("booster_t1_29dof/t1_mocap.xml"),
+    "stanford_toddy": _resolve_gmr_asset_path("stanford_toddy/toddy_mocap.xml"),
+    "fourier_n1": _resolve_gmr_asset_path("fourier_n1/n1_mocap.xml"),
+    "engineai_pm01": _resolve_gmr_asset_path("engineai_pm01/pm_v2.xml"),
+    "kuavo_s45": _resolve_gmr_asset_path("kuavo_s45/biped_s45_collision.xml"),
+    "hightorque_hi": _resolve_gmr_asset_path("hightorque_hi/hi_25dof.xml"),
+    "galaxea_r1pro": _resolve_gmr_asset_path("galaxea_r1pro/r1_pro.xml"),
+    "berkeley_humanoid_lite": _resolve_gmr_asset_path("berkeley_humanoid_lite/bhl_scene.xml"),
+    "booster_k1": _resolve_gmr_asset_path("booster_k1/K1_serial.xml"),
+    "pnd_adam_lite": _resolve_gmr_asset_path("pnd_adam_lite/scene.xml"),
+    "tienkung": _resolve_gmr_asset_path("tienkung/mjcf/tienkung.xml"),
+    "pal_talos": _resolve_gmr_asset_path("pal_talos/talos.xml"),
+    "fourier_gr3": _resolve_gmr_asset_path("fourier_gr3v2_1_1/mjcf/gr3v2_1_1_dummy_hand.xml"),
 }
 
 IK_CONFIG_DICT = {

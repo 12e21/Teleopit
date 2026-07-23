@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, cast
 
 from omegaconf import DictConfig
@@ -12,6 +11,7 @@ from teleopit.inputs import BVHInputProvider, Pico4InputProvider
 from teleopit.inputs.pico_video import PicoVideoRuntime, parse_pico_video_config
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.robots.mujoco_robot import MuJoCoRobot
+from teleopit.runtime.assets import PROJECT_ROOT
 from teleopit.runtime.common import cfg_get
 from teleopit.runtime.console import PlainConsole
 from teleopit.runtime.factory import build_inference_components
@@ -21,7 +21,7 @@ from teleopit.sim.loop import SimulationLoop
 class TeleopPipeline:
     def __init__(self, cfg: DictConfig | dict[str, Any], *, console: PlainConsole | None = None) -> None:
         self.cfg = cfg
-        self._project_root = Path(__file__).resolve().parent.parent
+        self._project_root = PROJECT_ROOT
         components = build_inference_components(
             cfg,
             self._project_root,
